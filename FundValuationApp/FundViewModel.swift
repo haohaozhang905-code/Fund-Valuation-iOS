@@ -119,6 +119,8 @@ final class FundViewModel: ObservableObject {
             summary.totalCumulativeProfit = 0
             summary.totalHoldValue = 0
             summary.latestDate = ""
+            summary.showTodayProfitDateLabel = false
+            summary.todayProfitDateLabel = ""
             await autoRunAIIfNeeded()
             return
         }
@@ -178,7 +180,16 @@ final class FundViewModel: ObservableObject {
         summary.totalCumulativeProfit = totalCumProfit
         summary.totalHoldValue = totalHoldValue
         summary.latestDate = latestDate
+        let beforeNextTradingDayOpens = beforeMarket || !tradingDay
+        summary.showTodayProfitDateLabel = beforeNextTradingDayOpens && !latestDate.isEmpty
+        summary.todayProfitDateLabel = formatLatestDateAsMMdd(latestDate)
         await autoRunAIIfNeeded()
+    }
+
+    private func formatLatestDateAsMMdd(_ ymd: String) -> String {
+        let parts = String(ymd.prefix(10)).split(separator: "-")
+        guard parts.count >= 2 else { return "" }
+        return "\(parts[1])-\(parts[2])"
     }
 
     private func loadSnapshotFromData(fund: FundPosition, valuation: FundValuationResponse?, navPair: NavPair?, pingzhongName: String?, marketOpen: Bool, beforeMarket: Bool, afterMarket: Bool, tradingDay: Bool) -> FundSnapshot? {
@@ -220,11 +231,11 @@ final class FundViewModel: ObservableObject {
             dataDate = String((valuation?.gztime ?? latestPublished?.date ?? "").prefix(10))
             todayBase = latestPublished?.value
         } else if beforeMarket || !tradingDay {
-            // 3. 交易前 或 4. 非交易日：上个交易日净值，当日收益=0
+            // 下个交易日未开盘：展示上个交易日数据，当日收益 = (最新净值 - 前日净值) × 份额
             currentPrice = latestPublished?.value ?? dwjz
             currentPriceLabel = "净值"
             dataDate = latestPublished?.date ?? String((valuation?.jzrq ?? "").prefix(10))
-            todayBase = currentPrice
+            todayBase = previousNav?.value ?? currentPrice
         } else if afterMarket {
             // 2. 交易后：净值已有用净值，净值暂无用当日估值
             if latestIsToday {

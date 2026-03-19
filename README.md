@@ -35,7 +35,7 @@ FundValuationApp/
 ```
 MainView（主界面）
 ├── 顶部栏：刷新、标题、设置
-├── 汇总区：账户总资产、当日收益、持有收益
+├── 汇总区：账户总资产、当日收益（下个交易日未开盘时显示 MM-DD 日期标签）、持有收益
 ├── 持仓列表：可点击进入详情、左滑编辑
 ├── 右下角悬浮按钮：打开 AI 分析
 │
@@ -70,7 +70,7 @@ MainView（主界面）
 | `FundPosition` | FundModels | 持仓：id、fundCode、costPrice、shares、fundName |
 | `FundSnapshot` | FundModels | 快照：currentPrice、todayProfit、cumulativeProfit、intradayTrend 等 |
 | `NavPair` | FundModels | 净值对：latest、previous（NavPoint） |
-| `PortfolioSummary` | FundModels | 汇总：totalCost、totalTodayProfit、totalCumulativeProfit、totalHoldValue |
+| `PortfolioSummary` | FundModels | 汇总：totalCost、totalTodayProfit、totalCumulativeProfit、totalHoldValue、showTodayProfitDateLabel、todayProfitDateLabel |
 | `FundValuationResponse` | FundServices | 估值 API 返回：gsz、gszzl、dwjz、jzrq、gztime |
 
 ---
@@ -114,12 +114,13 @@ MainView（主界面）
 | 时段 | 条件 | currentPrice | todayBase | 当日收益 |
 |------|------|--------------|-----------|----------|
 | **交易中** | 9:30–11:30 或 13:00–15:00 | gsz（估值） | 昨日净值 | (gsz - 昨日净值) × 份额 |
-| **交易前** | 9:30 前 | 最新净值 | = currentPrice | 0 |
-| **非交易日** | 周末/节假日 | 最新净值 | = currentPrice | 0 |
+| **交易前 / 非交易日** | 9:30 前 或 周末/节假日 | 最新净值 | 前日净值 | (最新 - 前日) × 份额 |
 | **收盘后 + 净值已出** | latestPublished 日期=今天 | 今日净值 | 前日净值 | (今日 - 前日) × 份额 |
 | **收盘后 + 净值未出** | 有当日估值 gsz | gsz | **估值接口 dwjz** | 优先用 **gszzl** |
 
 **重要**：收盘后净值未出时，`todayBase` 必须用估值接口的 `dwjz`，`todayRate` 优先用 `gszzl`，避免与 pingzhong/F10 混算导致数据跳动。
+
+**0 点后规则**：过了 0 点至下一交易日 9:30 前，仍展示上个交易日数据（不清空收益）。此时顶部 banner 的「当日收益」旁显示 MM-DD 日期标签（样式同列表「已更新」），标明数据所属日期。
 
 ### 4. 收益计算公式
 
@@ -151,6 +152,7 @@ MainView（主界面）
 3. **汇总**：遍历快照累加 totalCost、totalTodayProfit、totalCumulativeProfit、totalHoldValue
 4. **失败兜底**：若全部拉取失败，**不覆盖**旧 snapshots，避免列表变空
 5. **单基金失败**：该基金用上一次快照（`oldByID[fund.id]`）保留
+6. **日期标签**：若 `beforeMarket || !tradingDay`，设置 `showTodayProfitDateLabel`、`todayProfitDateLabel`（MM-dd 格式）
 
 **触发时机**：App 启动、下拉刷新、从后台回到前台、每 5 分钟定时刷新
 
@@ -204,6 +206,7 @@ MainView（主界面）
 |------|------|-----------|
 | 刷新入口 | FundViewModel | `refreshAll()` |
 | 快照计算 | FundViewModel | `loadSnapshotFromData()` |
+| 日期标签格式化 | FundViewModel | `formatLatestDateAsMMdd()` |
 | 时段判断 | FundServices | `DateHelper.marketOpenNow()` 等 |
 | 净值合并 | FundServices | `mergeNavPair()` |
 | 估值请求 | FundServices | `fetchValuation()` |

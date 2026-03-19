@@ -103,6 +103,8 @@ struct PortfolioSummary: Equatable {
     var totalHoldValue: Double = 0  // 总市值，账户总资产 = 各持仓市值之和
     var latestDate: String = ""
     var tradingBadge: String = "--"
+    var showTodayProfitDateLabel: Bool = false  // 下个交易日未开盘时，当日收益旁显示日期
+    var todayProfitDateLabel: String = ""       // "MM-dd" 格式
 
     /// 账户总资产 = 各持仓当前市值之和（总市值）
     var totalAsset: Double { totalHoldValue > 0 ? totalHoldValue : (totalCost + totalCumulativeProfit) }

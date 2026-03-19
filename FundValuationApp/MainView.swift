@@ -224,7 +224,8 @@ struct MainView: View {
                     title: "当日收益",
                     value: NumberFormat.signed(viewModel.summary.totalTodayProfit, digits: 2, prefixYuan: false),
                     subValue: NumberFormat.signedPercent(viewModel.summary.totalTodayRate),
-                    divider: true
+                    divider: true,
+                    dateSuffix: viewModel.summary.showTodayProfitDateLabel ? viewModel.summary.todayProfitDateLabel : nil
                 )
                 AssetMetric(
                     title: "持有收益",
@@ -367,14 +368,28 @@ private struct AssetMetric: View {
     let value: String
     let subValue: String?
     let divider: Bool
+    var dateSuffix: String? = nil  // 下个交易日未开盘时显示 "MM-dd"
 
     var body: some View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 10))
-                    .tracking(1.1)
-                    .foregroundStyle(Color.white.opacity(0.4))
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 10))
+                        .tracking(1.1)
+                        .foregroundStyle(Color.white.opacity(0.4))
+                    if let dateSuffix, !dateSuffix.isEmpty {
+                        Text(dateSuffix)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0x34D399))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color(hex: 0x064E3B).opacity(0.8))
+                            )
+                    }
+                }
                 Text(value)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(fgColor(value))
