@@ -148,11 +148,14 @@ MainView（主界面）
 ## 刷新流程（`refreshAll`）
 
 1. **并行拉取**：每个基金同时请求 `fetchValuationAndNav`（估值 + pingzhong + F10 并行）
-2. **快照计算**：`loadSnapshotFromData` 根据时段与数据源计算 currentPrice、todayBase、todayRate
+2. **估值重试**：**交易日**估值失败时最多重试 3 次；**非交易日**单次请求
+3. **快照计算**：`loadSnapshotFromData` 根据时段与数据源计算 currentPrice、todayBase、todayRate
 3. **汇总**：遍历快照累加 totalCost、totalTodayProfit、totalCumulativeProfit、totalHoldValue
 4. **失败兜底**：若全部拉取失败，**不覆盖**旧 snapshots，避免列表变空
 5. **单基金失败**：该基金用上一次快照（`oldByID[fund.id]`）保留
 6. **日期标签**：若 `beforeMarket || !tradingDay`，设置 `showTodayProfitDateLabel`、`todayProfitDateLabel`（MM-dd 格式）
+
+**估值失败（交易日）**：重试 3 次后仍失败，当日收益按 **0** 计算，不回退到 F10 昨日净值。
 
 **触发时机**：App 启动、下拉刷新、从后台回到前台、每 5 分钟定时刷新
 
@@ -162,7 +165,8 @@ MainView（主界面）
 
 | 场景 | 行为 |
 |------|------|
-| 估值 API 失败 | 用 latestPublished / dwjz 兜底，可能无当日估值 |
+| 估值 API 失败（交易日） | 重试最多 3 次；仍失败则当日收益=0，不回退到 F10 |
+| 估值 API 失败（非交易日） | 单次请求，失败则走现有逻辑（F10 兜底） |
 | 净值 API 全部失败 | 用估值接口的 valNav 或 nil |
 | 全部基金拉取失败 | 不覆盖 snapshots，保留上次数据 |
 | 基金代码校验失败 | 编辑页保存时弹窗「基金代码无效」 |
@@ -196,7 +200,7 @@ MainView（主界面）
 
 - **QDII / T+2 基金**：pingzhong 数据可能滞后，F10 更新更及时；收盘后净值未出时务必用估值接口的 dwjz/gszzl
 - **接口依赖**：依赖天天基金、东方财富公开接口，无官方文档，可能变动
-- **时区**：交易日判断使用设备本地时区（`TimeZone.current`）
+- **时区**：交易日、开盘/收盘时段、「今天」判断均使用 **Asia/Shanghai**，不依赖设备时区
 
 ---
 
@@ -207,6 +211,8 @@ MainView（主界面）
 | 刷新入口 | FundViewModel | `refreshAll()` |
 | 快照计算 | FundViewModel | `loadSnapshotFromData()` |
 | 日期标签格式化 | FundViewModel | `formatLatestDateAsMMdd()` |
+| 估值重试 | FundServices | `fetchValuationWithRetry()` |
+| 今日日期（上海时区） | FundServices | `DateHelper.todayYMDShanghai()` |
 | 时段判断 | FundServices | `DateHelper.marketOpenNow()` 等 |
 | 净值合并 | FundServices | `mergeNavPair()` |
 | 估值请求 | FundServices | `fetchValuation()` |

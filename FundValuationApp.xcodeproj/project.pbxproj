@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 582C16C62F5D8A82003AEE90 /* Build configuration list for PBXProject "FundValuationApp" */;
+			buildConfigurationList = 582C16C62F5D8A82003AEE90 /* Build configuration list for PBXProject "FundValuationAPP" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -320,7 +320,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		582C16C62F5D8A82003AEE90 /* Build configuration list for PBXProject "FundValuationApp" */ = {
+		582C16C62F5D8A82003AEE90 /* Build configuration list for PBXProject "FundValuationAPP" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				582C16D42F5D8A82003AEE90 /* Debug */,
