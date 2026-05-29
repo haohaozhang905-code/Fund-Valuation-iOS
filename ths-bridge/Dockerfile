@@ -1,9 +1,3 @@
-# ---- 构建阶段 ----
-FROM node:20-bookworm-slim AS node-base
-RUN npm install -g westock-data-clawhub@1.0.4 && \
-    npx -y westock-data-clawhub@1.0.4 hot 2>/dev/null || true
-
-# ---- 运行阶段 ----
 FROM python:3.11-slim
 
 # 1) 安装 Node.js + npm（westock client 需要 npx）
@@ -18,10 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# 2) 从构建阶段拷贝预装的 npm 包，避免运行时 npx 下载
-COPY --from=node-base /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=node-base /usr/local/bin/westock-data-clawhub /usr/local/bin/westock-data-clawhub 2>/dev/null || true
-RUN npm install -g westock-data-clawhub@1.0.4 2>/dev/null || true
+# 2) 预装 westock-data-clawhub，避免运行时 npx 下载
+RUN npm install -g westock-data-clawhub@1.0.4
 
 # 3) 安装 Python 依赖
 WORKDIR /app
