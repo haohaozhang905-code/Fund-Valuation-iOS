@@ -25,7 +25,7 @@ COPY app.py .
 COPY westock_client.py .
 
 # 5) 暴露端口
-EXPOSE 8787
+EXPOSE 8080
 
 # 6) 启动
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8787"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
