@@ -46,6 +46,7 @@ struct MainView: View {
 
     @State private var editingFund: FundPosition?
     @State private var selectedSnapshot: FundSnapshot?
+    @State private var pageTransitionForward = true
 
     var body: some View {
         NavigationStack {
@@ -60,18 +61,12 @@ struct MainView: View {
 
                     GeometryReader { pageProxy in
                         let pageSize = pageProxy.size
-                        TabView(selection: $selectedTab) {
-                            tabScrollPage(pageSize: pageSize, bottomPadding: 88) {
-                                fundContent
-                            }
-                            .tag(AssetTab.funds)
 
-                            tabScrollPage(pageSize: pageSize, bottomPadding: 32) {
-                                StockTabView(viewModel: stockViewModel)
-                            }
-                            .tag(AssetTab.stocks)
+                        ZStack(alignment: .topLeading) {
+                            currentTabPage(pageSize: pageSize)
+                                .id(selectedTab)
+                                .transition(pageTransition)
                         }
-                        .tabViewStyle(.page(indexDisplayMode: .never))
                         .frame(width: pageSize.width, height: pageSize.height)
                         .background(pageBackground)
                     }
@@ -316,7 +311,31 @@ struct MainView: View {
 
     private func selectTab(_ tab: AssetTab) {
         guard selectedTab != tab else { return }
-        selectedTab = tab
+        pageTransitionForward = tab.order > selectedTab.order
+        withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.9)) {
+            selectedTab = tab
+        }
+    }
+
+    private var pageTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: pageTransitionForward ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: pageTransitionForward ? .leading : .trailing).combined(with: .opacity)
+        )
+    }
+
+    @ViewBuilder
+    private func currentTabPage(pageSize: CGSize) -> some View {
+        switch selectedTab {
+        case .funds:
+            tabScrollPage(pageSize: pageSize, bottomPadding: 24) {
+                fundContent
+            }
+        case .stocks:
+            tabScrollPage(pageSize: pageSize, bottomPadding: 32) {
+                StockTabView(viewModel: stockViewModel)
+            }
+        }
     }
 
     private var fundContent: some View {
@@ -333,7 +352,7 @@ struct MainView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 .padding(.bottom, bottomPadding)
-                .frame(maxWidth: .infinity, minHeight: pageSize.height, alignment: .top)
+                .frame(maxWidth: .infinity, alignment: .top)
                 .background(pageBackground)
         }
         .frame(width: pageSize.width, height: pageSize.height)
