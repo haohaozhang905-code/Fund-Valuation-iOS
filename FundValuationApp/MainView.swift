@@ -1,17 +1,48 @@
 import SwiftUI
 import Charts
 
+private enum AssetTab: String, CaseIterable {
+    case funds = "基金"
+    case stocks = "美股"
+
+    var order: Int {
+        switch self {
+        case .funds:
+            return 0
+        case .stocks:
+            return 1
+        }
+    }
+}
+
+private enum AppVisual {
+    static let pageBackground = Color(hex: 0x1C1C1E)
+    static let topBarBackground = Color(hex: 0x0A0A0A)
+    static let cardBackground = Color(hex: 0x0A0A0A)
+    static let elevatedBackground = Color(hex: 0x2C2C2E)
+    static let selectedBackground = Color(hex: 0x2C2C2E)
+    static let separator = Color(hex: 0x262626).opacity(0.2)
+    static let secondaryText = Color(hex: 0xA1A1A1)
+    static let accent = Color(hex: 0x2B7FFF)
+    static let fundLine = Color(hex: 0x2B7FFF)
+    static let indexLine = Color(hex: 0xFF9500)
+}
+
 struct MainView: View {
     @StateObject private var viewModel = FundViewModel()
+    @StateObject private var stockViewModel = StockViewModel()
     @AppStorage("fund_theme") private var themeMode: String = "system"
     @Environment(\.refresh) private var refreshAction
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var selectedTab: AssetTab = .funds
     @State private var showEditor = false
     @State private var showAIDrawer = false
     @State private var showSettings = false
     @State private var hasBeenInBackground = false
     @State private var periodicRefreshTask: Task<Void, Never>?
+    @State private var lastFundRefreshAt: Date?
+    @State private var lastStockRefreshAt: Date?
 
     @State private var editingFund: FundPosition?
     @State private var selectedSnapshot: FundSnapshot?
@@ -21,53 +52,39 @@ struct MainView: View {
             ZStack {
                 pageBackground.ignoresSafeArea()
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 16) {
-                        summarySection
-                        holdingHeader
-                        sortHeaderRow
-                        listSection
+                VStack(spacing: 0) {
+                    tabSwitcher
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 16)
+
+                    GeometryReader { pageProxy in
+                        let pageSize = pageProxy.size
+                        TabView(selection: $selectedTab) {
+                            tabScrollPage(pageSize: pageSize, bottomPadding: 88) {
+                                fundContent
+                            }
+                            .tag(AssetTab.funds)
+
+                            tabScrollPage(pageSize: pageSize, bottomPadding: 32) {
+                                StockTabView(viewModel: stockViewModel)
+                            }
+                            .tag(AssetTab.stocks)
+                        }
+                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .frame(width: pageSize.width, height: pageSize.height)
+                        .background(pageBackground)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 120)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(pageBackground)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     topBar
                 }
-                .refreshable {
-                    await viewModel.refreshAll()
-                }
 
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button {
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) {
-                                showAIDrawer = true
-                            }
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [Color(hex: 0x8E00FF), Color(hex: 0x4F39F6)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(.white)
-                            }
-                            .frame(width: 52, height: 52)
-                            .shadow(color: Color(hex: 0xAD46FF).opacity(0.35), radius: 16, y: 8)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 16)
+                if selectedTab == .funds {
+                    aiFloatingButton
                 }
 
             }
@@ -85,8 +102,8 @@ struct MainView: View {
                     showEditor = false
                     Task { await viewModel.refreshAll() }
                 },
-                onSave: { id, code, cost, shares in
-                    if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares) {
+                onSave: { id, code, cost, shares, fundName in
+                    if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares, fundName: fundName) {
                         showEditor = false
                         Task { await viewModel.refreshAll() }
                     }
@@ -94,7 +111,7 @@ struct MainView: View {
             )
         }
         .fullScreenCover(isPresented: $showSettings) {
-            SettingsPageView(viewModel: viewModel, themeMode: $themeMode)
+            SettingsPageView(viewModel: viewModel, stockViewModel: stockViewModel, themeMode: $themeMode)
         }
         .fullScreenCover(item: $selectedSnapshot) { snap in
             FundDetailPageView(
@@ -103,8 +120,8 @@ struct MainView: View {
                 totalAsset: viewModel.summary.totalAsset,
                 fund: viewModel.funds.first(where: { $0.id == snap.id }),
                 onClose: { selectedSnapshot = nil },
-                onSave: { id, code, cost, shares in
-                    if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares) {
+                onSave: { id, code, cost, shares, fundName in
+                    if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares, fundName: fundName) {
                         Task { await viewModel.refreshAll() }
                     }
                 },
@@ -120,14 +137,21 @@ struct MainView: View {
         }
         .task {
             viewModel.loadInitialData()
-            await viewModel.refreshAll()
+            stockViewModel.loadInitialData()
+            await refreshCurrentTab(force: true)
             startPeriodicRefresh()
+        }
+        .onChange(of: selectedTab) { _ in
+            startPeriodicRefresh()
+            Task {
+                await refreshCurrentTab(force: false)
+            }
         }
         .onChange(of: scenePhase) { newPhase in
             switch newPhase {
             case .active:
                 if hasBeenInBackground {
-                    Task { await viewModel.refreshAll() }
+                    Task { await refreshCurrentTab(force: true) }
                     hasBeenInBackground = false
                 }
                 startPeriodicRefresh()
@@ -145,30 +169,80 @@ struct MainView: View {
         periodicRefreshTask?.cancel()
         periodicRefreshTask = Task { @MainActor in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: refreshIntervalNanoseconds)
                 guard !Task.isCancelled else { break }
-                await viewModel.refreshAll()
+                await refreshCurrentTab(force: true)
             }
         }
     }
 
+    private var refreshIntervalNanoseconds: UInt64 {
+        switch selectedTab {
+        case .funds:
+            return 5 * 60 * 1_000_000_000
+        case .stocks:
+            return 60 * 1_000_000_000
+        }
+    }
+
+    private var isCurrentTabRefreshing: Bool {
+        selectedTab == .funds ? viewModel.isRefreshing : stockViewModel.isRefreshing
+    }
+
+    private var tabSwitchRefreshInterval: TimeInterval {
+        switch selectedTab {
+        case .funds:
+            return 5 * 60
+        case .stocks:
+            return 30
+        }
+    }
+
+    private func refreshCurrentTab(force: Bool = true) async {
+        guard force || shouldRefreshCurrentTab() else { return }
+        switch selectedTab {
+        case .funds:
+            await viewModel.refreshAll()
+            lastFundRefreshAt = Date()
+        case .stocks:
+            await stockViewModel.refreshAll()
+            lastStockRefreshAt = Date()
+        }
+    }
+
+    private func shouldRefreshCurrentTab() -> Bool {
+        let lastRefreshAt: Date?
+        let hasLoadedData: Bool
+        switch selectedTab {
+        case .funds:
+            lastRefreshAt = lastFundRefreshAt
+            hasLoadedData = !viewModel.snapshots.isEmpty || viewModel.funds.isEmpty
+        case .stocks:
+            lastRefreshAt = lastStockRefreshAt
+            hasLoadedData = !stockViewModel.snapshots.isEmpty || stockViewModel.positions.isEmpty
+        }
+        guard hasLoadedData else { return true }
+        guard let lastRefreshAt else { return true }
+        return Date().timeIntervalSince(lastRefreshAt) >= tabSwitchRefreshInterval
+    }
+
     private var pageBackground: Color {
-        Color(hex: 0x1C1C1E)
+        AppVisual.pageBackground
     }
 
     private var topBar: some View {
         ZStack {
-            Color(hex: 0x0A0A0A)
+            AppVisual.topBarBackground
             HStack {
                 Button {
                     if let refreshAction {
                         Task { await refreshAction() }
                     } else {
-                        Task { await viewModel.refreshAll() }
+                        Task { await refreshCurrentTab() }
                     }
                 } label: {
                     ZStack {
-                        if viewModel.isRefreshing {
+                        if isCurrentTabRefreshing {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: 0xA1A1A1)))
                                 .scaleEffect(0.8)
@@ -181,9 +255,9 @@ struct MainView: View {
                     .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isRefreshing)
+                .disabled(isCurrentTabRefreshing)
                 Spacer()
-                Text("Fund Valuation")
+                Text("持仓看板")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
@@ -200,7 +274,7 @@ struct MainView: View {
             .padding(.horizontal, 16)
         }
         .frame(height: 49)
-        .background(Color(hex: 0x0A0A0A).ignoresSafeArea(edges: .top))
+        .background(AppVisual.topBarBackground.ignoresSafeArea(edges: .top))
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color(hex: 0x262626).opacity(0.2))
@@ -208,9 +282,104 @@ struct MainView: View {
         }
     }
 
+    private var tabSwitcher: some View {
+        HStack(spacing: 4) {
+            ForEach(AssetTab.allCases, id: \.self) { tab in
+                Button {
+                    selectTab(tab)
+                } label: {
+                    Text(tab.rawValue)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(selectedTab == tab ? .white.opacity(0.92) : AppVisual.secondaryText.opacity(0.62))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(selectedTab == tab ? AppVisual.selectedBackground : Color.clear)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(selectedTab == tab ? Color.white.opacity(0.08) : Color.clear, lineWidth: 1)
+                                )
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(hex: 0x0A0A0A))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x262626).opacity(0.35), lineWidth: 1))
+        )
+    }
+
+    private func selectTab(_ tab: AssetTab) {
+        guard selectedTab != tab else { return }
+        selectedTab = tab
+    }
+
+    private var fundContent: some View {
+        VStack(spacing: 16) {
+            summarySection
+            sortHeaderRow
+            listSection
+        }
+    }
+
+    private func tabScrollPage<Content: View>(pageSize: CGSize, bottomPadding: CGFloat, @ViewBuilder content: @escaping () -> Content) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content()
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, bottomPadding)
+                .frame(maxWidth: .infinity, minHeight: pageSize.height, alignment: .top)
+                .background(pageBackground)
+        }
+        .frame(width: pageSize.width, height: pageSize.height)
+        .background(pageBackground)
+        .scrollContentBackground(.hidden)
+        .refreshable {
+            await refreshCurrentTab()
+        }
+    }
+
+    private var aiFloatingButton: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) {
+                        showAIDrawer = true
+                    }
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color(hex: 0x8E00FF), Color(hex: 0x4F39F6)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 52, height: 52)
+                    .shadow(color: Color(hex: 0xAD46FF).opacity(0.35), radius: 16, y: 8)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.trailing, 20)
+            .padding(.bottom, 16)
+        }
+    }
+
     private var summarySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("账户总资产")
+            Text("基金资产")
                 .font(.system(size: 10))
                 .tracking(1.1)
                 .foregroundStyle(Color.white.opacity(0.45))
@@ -219,57 +388,82 @@ struct MainView: View {
                 .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(.white)
 
-            HStack(spacing: 32) {
+            HStack(spacing: 0) {
                 AssetMetric(
-                    title: "当日收益",
+                    title: "当日盈亏",
                     value: NumberFormat.signed(viewModel.summary.totalTodayProfit, digits: 2, prefixYuan: false),
                     subValue: NumberFormat.signedPercent(viewModel.summary.totalTodayRate),
-                    divider: true,
+                    divider: false,
                     dateSuffix: viewModel.summary.showTodayProfitDateLabel ? viewModel.summary.todayProfitDateLabel : nil
                 )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle()
+                    .fill(Color.white.opacity(0.1))
+                    .frame(width: 1, height: 56)
+                    .padding(.horizontal, 16)
                 AssetMetric(
-                    title: "持有收益",
+                    title: "累计盈亏",
                     value: NumberFormat.signed(viewModel.summary.totalCumulativeProfit, digits: 2, prefixYuan: false),
                     subValue: NumberFormat.signedPercent(viewModel.summary.totalCumulativeRate),
                     divider: false
                 )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.trailing, 78)
+
+            Text(fundBannerFooterText)
+                .font(.system(size: 10))
+                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
         }
         .padding(.horizontal, 20)
         .padding(.top, 16)
         .padding(.bottom, 11)
-        .frame(height: 135)
+        .frame(height: 150)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .topTrailing) {
+            Text(fundMarketBadgeText)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(hex: 0xDBEAFE))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x1C398E).opacity(0.75)))
+                .padding(.trailing, 16)
+                .padding(.top, 16)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                editingFund = nil
+                showEditor = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 32, height: 32)
+                    .background(
+                        Circle()
+                            .fill(Color(hex: 0x2C2C2E))
+                            .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 1))
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
+            .padding(.bottom, 14)
+        }
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.black)
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 6)
         )
     }
 
-    private var holdingHeader: some View {
-        HStack {
-            Text("我的持仓")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-            Spacer()
-            Button {
-                editingFund = nil
-                showEditor = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("添加")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(Capsule().fill(Color(hex: 0x4473BB)))
-            }
-            .buttonStyle(.plain)
-        }
+    private var fundMarketBadgeText: String {
+        viewModel.summary.tradingBadge.components(separatedBy: " · ").first ?? "--"
+    }
+
+    private var fundBannerFooterText: String {
+        let parts = viewModel.summary.tradingBadge.components(separatedBy: " · ")
+        guard parts.count > 1 else { return "数据更新 --" }
+        return "数据更新 \(parts[1])"
     }
 
     private var sortHeaderRow: some View {
@@ -279,14 +473,14 @@ struct MainView: View {
                 viewModel.toggleSort(.today)
             } label: {
                 HStack(spacing: 2) {
-                    Text("当日收益")
+                    Text("当日盈亏")
                         .font(.system(size: 10, weight: .medium))
                         .tracking(0.37)
                         .textCase(.uppercase)
                     Image(systemName: sortIcon(for: .today))
                         .font(.system(size: 10))
                 }
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(viewModel.sortField == .today ? 0.8 : 0.45))
+                .foregroundStyle(AppVisual.secondaryText.opacity(viewModel.sortField == .today ? 0.82 : 0.48))
             }
             .buttonStyle(.plain)
             .frame(width: 82, alignment: .trailing)
@@ -295,21 +489,21 @@ struct MainView: View {
                 viewModel.toggleSort(.cumulative)
             } label: {
                 HStack(spacing: 2) {
-                    Text("累计收益")
+                    Text("累计盈亏")
                         .font(.system(size: 10, weight: .medium))
                         .tracking(0.37)
                         .textCase(.uppercase)
                     Image(systemName: sortIcon(for: .cumulative))
                         .font(.system(size: 10))
                 }
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(viewModel.sortField == .cumulative ? 0.8 : 0.45))
+                .foregroundStyle(AppVisual.secondaryText.opacity(viewModel.sortField == .cumulative ? 0.82 : 0.48))
             }
             .buttonStyle(.plain)
             .frame(width: 82, alignment: .trailing)
         }
         .frame(height: 23)
         .padding(.horizontal, 16)
-        .padding(.top, -12)
+        .padding(.top, -4)
         .padding(.bottom, -8)
     }
 
@@ -321,8 +515,9 @@ struct MainView: View {
     }
 
     private var listSection: some View {
-        VStack(spacing: 0) {
-            if viewModel.sortedSnapshots.isEmpty {
+        let snapshots = viewModel.sortedSnapshots
+        return VStack(spacing: 0) {
+            if snapshots.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "tray")
                         .font(.title2)
@@ -336,28 +531,27 @@ struct MainView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 30)
             } else {
-                ForEach(Array(viewModel.sortedSnapshots.enumerated()), id: \.element.id) { index, snap in
+                ForEach(Array(snapshots.enumerated()), id: \.element.id) { index, snap in
                     Button {
                         selectedSnapshot = snap
                     } label: {
                         FundListRowView(snap: snap, dark: true)
                     }
                     .buttonStyle(.plain)
-                    if index < viewModel.sortedSnapshots.count - 1 {
+                    if index < snapshots.count - 1 {
                         Divider()
-                            .overlay(Color(hex: 0x262626).opacity(0.2))
+                            .overlay(AppVisual.separator)
                     }
                 }
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(hex: 0x0A0A0A))
+                .fill(AppVisual.cardBackground)
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1)
+                        .stroke(AppVisual.separator, lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
         )
     }
 
@@ -385,7 +579,7 @@ private struct AssetMetric: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(
-                                RoundedRectangle(cornerRadius: 4)
+                                RoundedRectangle(cornerRadius: 6)
                                     .fill(Color(hex: 0x064E3B).opacity(0.8))
                             )
                     }
@@ -432,8 +626,19 @@ private struct FundListRowView: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(
-                                RoundedRectangle(cornerRadius: 4)
+                                RoundedRectangle(cornerRadius: 6)
                                     .fill(dark ? Color(hex: 0x064E3B).opacity(0.8) : Color(hex: 0xD1FAE5))
+                            )
+                    }
+                    if snap.currentPriceLabel == "净值", !snap.hasTodayNav {
+                        Text("净值口径")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0xFEE685))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color(hex: 0x7B3306).opacity(dark ? 0.55 : 0.12))
                             )
                     }
                     Text(NumberFormat.signed(snap.holdValue, digits: 2, prefixYuan: false).replacingOccurrences(of: "+", with: ""))
@@ -481,13 +686,14 @@ private struct FundDetailPageView: View {
     let totalAsset: Double
     let fund: FundPosition?
     let onClose: () -> Void
-    let onSave: (_ editingID: String?, _ code: String, _ cost: Double, _ shares: Double) -> Void
+    let onSave: (_ editingID: String?, _ code: String, _ cost: Double, _ shares: Double, _ fundName: String?) -> Void
     let onDelete: (_ id: String) -> Void
 
     @State private var showEditor = false
     @State private var dailyPerformanceTrend: [DailyPerformancePoint] = []
     @State private var csi300Trend: [DailyPerformancePoint] = []
     @State private var performanceRange: PerformanceRange = .m3
+    @State private var performanceCache: [String: (fund: [DailyPerformancePoint], index: [DailyPerformancePoint])] = [:]
 
     private var currentSnap: FundSnapshot {
         viewModel.snapshots.first(where: { $0.id == snap.id }) ?? snap
@@ -500,7 +706,7 @@ private struct FundDetailPageView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color(hex: 0x1C1C1E).ignoresSafeArea()
+            AppVisual.pageBackground.ignoresSafeArea()
             VStack(spacing: 0) {
                 ZStack {
                     HStack {
@@ -511,13 +717,17 @@ private struct FundDetailPageView: View {
                                 Text("返回")
                                     .font(.system(size: 16, weight: .medium))
                             }
-                            .foregroundStyle(Color(hex: 0x2B7FFF))
+                            .foregroundStyle(AppVisual.accent)
                         }
                         .buttonStyle(.plain)
                         .frame(minWidth: 72, alignment: .leading)
                         Spacer()
                         Button {
-                            if fund != nil { showEditor = true }
+                            if fund != nil {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showEditor = true
+                                }
+                            }
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "pencil")
@@ -525,7 +735,7 @@ private struct FundDetailPageView: View {
                                 Text("编辑")
                                     .font(.system(size: 16, weight: .medium))
                             }
-                            .foregroundStyle(Color(hex: 0x2B7FFF))
+                            .foregroundStyle(AppVisual.accent)
                         }
                         .buttonStyle(.plain)
                         .frame(minWidth: 72, alignment: .trailing)
@@ -536,17 +746,17 @@ private struct FundDetailPageView: View {
                 }
                 .padding(.horizontal, 16)
                 .frame(height: 49)
-                .background(Color(hex: 0x0A0A0A))
+                .background(AppVisual.topBarBackground)
                 .overlay(alignment: .bottom) {
-                    Rectangle().fill(Color(hex: 0x262626).opacity(0.2)).frame(height: 1)
+                    Rectangle().fill(AppVisual.separator).frame(height: 1)
                 }
 
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 6) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(currentSnap.code)
                                 .font(.system(size: 13))
-                                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                                .foregroundStyle(AppVisual.secondaryText.opacity(0.68))
                             Text(currentSnap.name)
                                 .font(.system(size: 17, weight: .bold))
                                 .foregroundStyle(.white)
@@ -555,16 +765,16 @@ private struct FundDetailPageView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("当日涨幅")
                                             .font(.system(size: 11))
-                                            .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
+                                            .foregroundStyle(AppVisual.secondaryText.opacity(0.58))
                                         Text(NumberFormat.signedPercent(currentSnap.todayRate))
                                             .font(.system(size: 22, weight: .bold))
                                             .foregroundStyle(colorFor(currentSnap.todayRate))
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("当日收益")
+                                        Text("当日盈亏")
                                             .font(.system(size: 11))
-                                            .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
+                                            .foregroundStyle(AppVisual.secondaryText.opacity(0.58))
                                         Text(NumberFormat.signed(currentSnap.todayProfit, digits: 2))
                                             .font(.system(size: 22, weight: .bold))
                                             .foregroundStyle(colorFor(currentSnap.todayProfit))
@@ -575,38 +785,84 @@ private struct FundDetailPageView: View {
                                     ? "净值日期 \(DateHelper.formatDataDateDisplay(currentSnap.dataDate))"
                                     : "估值时间 \(DateHelper.formatValuationTimeWithDate(currentSnap.valuationTime))")
                                     .font(.system(size: 11))
-                                    .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.45))
+                                    .foregroundStyle(AppVisual.secondaryText.opacity(0.5))
                             }
                         }
                         .padding(.horizontal, 20)
                         .padding(.top, 20)
                         .padding(.bottom, 12)
-                        .background(Color(hex: 0x0A0A0A))
+                        .background(AppVisual.cardBackground)
 
                         detailsGrid
                         chartSection
+                        fundQuoteInfoSection
                     }
                 }
             }
-        }
-        .swipeBackGesture(onBack: onClose)
-        .fullScreenCover(isPresented: $showEditor) {
-            if let fund {
+            if showEditor, let fund {
                 FundEditorView(
                     editing: fund,
                     viewModel: viewModel,
                     displayName: currentSnap.name,
                     onDelete: { id in
                         onDelete(id)
-                        showEditor = false
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEditor = false
+                        }
                     },
-                    onSave: { id, code, cost, shares in
-                        onSave(id, code, cost, shares)
-                        showEditor = false
+                    onSave: { id, code, cost, shares, fundName in
+                        onSave(id, code, cost, shares, fundName)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEditor = false
+                        }
+                    },
+                    onCancel: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showEditor = false
+                        }
                     }
                 )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .opacity
+                ))
+                .zIndex(2)
             }
         }
+        .swipeBackGesture(onBack: onClose)
+    }
+
+    private var fundQuoteInfoSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("行情信息")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white)
+            infoRow("数据源", fundDataSourceText)
+            infoRow("价格口径", currentSnap.currentPriceLabel)
+            if currentSnap.currentPriceLabel == "净值", !currentSnap.hasTodayNav {
+                infoRow("估值状态", "盘中估值不可用，使用最新净值")
+            }
+            infoRow("当前价格", currentSnap.currentPrice.map { NumberFormat.fixed($0, digits: 4) } ?? "--")
+            infoRow("最新净值", currentSnap.latestPublishedNav.map { NumberFormat.fixed($0, digits: 4) } ?? "--")
+            infoRow("前一净值", currentSnap.previousNav.map { NumberFormat.fixed($0, digits: 4) } ?? "--")
+            infoRow("净值日期", DateHelper.formatDataDateDisplay(currentSnap.dataDate))
+            if currentSnap.valuationTime != "--" {
+                infoRow("估值时间", DateHelper.formatValuationTimeWithDate(currentSnap.valuationTime))
+            }
+            infoRow("本地刷新时间", fundDetailRefreshTimeText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppVisual.cardBackground)
+    }
+
+    private var fundDataSourceText: String {
+        currentSnap.currentPriceLabel == "估值" ? "天天基金估值 / 东方财富净值" : "东方财富净值"
+    }
+
+    private var fundDetailRefreshTimeText: String {
+        let parts = viewModel.summary.tradingBadge.components(separatedBy: " · ")
+        return parts.count > 1 ? parts[1] : "--"
     }
 
     private var detailsGrid: some View {
@@ -616,15 +872,15 @@ private struct FundDetailPageView: View {
                 detailCell("持有份额", NumberFormat.fixed(currentSnap.shares, digits: 2))
                 detailCell("持仓占比", weightText, showRightDivider: false)
             }
-            Divider().overlay(Color(hex: 0x262626).opacity(0.1))
+            Divider().overlay(AppVisual.separator)
             HStack(spacing: 0) {
-                detailCell("持有收益", NumberFormat.signed(currentSnap.cumulativeProfit, digits: 2, prefixYuan: false), color: colorFor(currentSnap.cumulativeProfit))
-                detailCell("持有收益率", NumberFormat.signedPercent(currentSnap.cumulativeRate), color: colorFor(currentSnap.cumulativeProfit))
+                detailCell("累计盈亏", NumberFormat.signed(currentSnap.cumulativeProfit, digits: 2, prefixYuan: false), color: colorFor(currentSnap.cumulativeProfit))
+                detailCell("累计收益率", NumberFormat.signedPercent(currentSnap.cumulativeRate), color: colorFor(currentSnap.cumulativeProfit))
                 detailCell("持仓成本", NumberFormat.fixed(currentSnap.costPrice, digits: 4), showRightDivider: false)
             }
         }
         .frame(height: 124)
-        .background(Color(hex: 0x0A0A0A))
+        .background(AppVisual.cardBackground)
     }
 
     private var chartSection: some View {
@@ -637,14 +893,23 @@ private struct FundDetailPageView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
-            Divider().overlay(Color(hex: 0x262626).opacity(0.15))
+            Divider().overlay(AppVisual.separator)
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 20) {
-                    (Text("本基金 ").foregroundColor(.white) + Text(NumberFormat.signedPercent(dailyPerformanceTrend.last?.cumulativeReturn)).foregroundColor(colorFor(dailyPerformanceTrend.last?.cumulativeReturn)))
-                        .font(.system(size: 13, weight: .semibold))
-                    (Text("沪深300 ").foregroundColor(.white) + Text(NumberFormat.signedPercent(csi300Trend.last?.cumulativeReturn)).foregroundColor(colorFor(csi300Trend.last?.cumulativeReturn)))
-                        .font(.system(size: 13, weight: .semibold))
+                    performanceLegendItem(
+                        title: "本基金",
+                        value: NumberFormat.signedPercent(dailyPerformanceTrend.last?.cumulativeReturn),
+                        lineColor: AppVisual.fundLine,
+                        valueColor: colorFor(dailyPerformanceTrend.last?.cumulativeReturn)
+                    )
+                    performanceLegendItem(
+                        title: "沪深300",
+                        value: NumberFormat.signedPercent(csi300Trend.last?.cumulativeReturn),
+                        lineColor: AppVisual.indexLine,
+                        valueColor: colorFor(csi300Trend.last?.cumulativeReturn)
+                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 FundDailyPerformanceChartView(
                     fundPoints: dailyPerformanceTrend,
@@ -654,7 +919,7 @@ private struct FundDetailPageView: View {
                 .frame(height: 173)
 
                 GeometryReader { geo in
-                    let w = max(1, (geo.size.width - 8) / 5)
+                    let w = max(1, (geo.size.width - 8) / CGFloat(PerformanceRange.allCases.count))
                     HStack(spacing: 2) {
                         ForEach(PerformanceRange.allCases, id: \.self) { r in
                             Button {
@@ -662,11 +927,11 @@ private struct FundDetailPageView: View {
                             } label: {
                                 Text(r.rawValue)
                                     .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(performanceRange == r ? .white : Color(hex: 0xA1A1A1).opacity(0.7))
+                                    .foregroundStyle(performanceRange == r ? .white : AppVisual.secondaryText.opacity(0.7))
                                     .frame(width: w)
                                     .padding(.vertical, 6)
-                                    .background(performanceRange == r ? Color(hex: 0x2B7FFF).opacity(0.35) : Color.clear)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    .background(performanceRange == r ? AppVisual.selectedBackground : Color.clear)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
                             }
                             .buttonStyle(.plain)
                         }
@@ -677,11 +942,32 @@ private struct FundDetailPageView: View {
             }
             .padding(16)
         }
-        .background(Color(hex: 0x0A0A0A))
+        .background(AppVisual.cardBackground)
         .task(id: "\(currentSnap.code)_\(performanceRange.rawValue)") {
+            let cacheKey = "\(currentSnap.code)_\(performanceRange.rawValue)"
+            if let cached = performanceCache[cacheKey] {
+                dailyPerformanceTrend = cached.fund
+                csi300Trend = cached.index
+                return
+            }
             let (fund, index) = await viewModel.fetchPerformanceTrend(fundCode: currentSnap.code, range: performanceRange)
             dailyPerformanceTrend = fund
             csi300Trend = index
+            performanceCache[cacheKey] = (fund, index)
+        }
+    }
+
+    private func performanceLegendItem(title: String, value: String, lineColor: Color, valueColor: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(lineColor)
+                .frame(width: 7, height: 7)
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.82))
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(valueColor)
         }
     }
 
@@ -705,6 +991,19 @@ private struct FundDetailPageView: View {
         }
     }
 
+    private func infoRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.75))
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
     private func colorFor(_ v: Double?) -> Color {
         guard let v else { return .white }
         if v > 0 { return Color(hex: 0xFB2C36) }
@@ -714,15 +1013,60 @@ private struct FundDetailPageView: View {
 }
 
 private struct SettingsPageView: View {
+    private struct StockProviderOption: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String
+        let requiresAPIKey: Bool
+        let requiresEndpoint: Bool
+    }
+
+    private let stockProviderOptions = [
+        StockProviderOption(
+            id: "thsbridge",
+            title: "THS Bridge",
+            subtitle: "通过自建 Bridge 接同花顺行情，适合作为后续主行情源。",
+            requiresAPIKey: false,
+            requiresEndpoint: true
+        ),
+        StockProviderOption(
+            id: "finnhub",
+            title: "Finnhub",
+            subtitle: "正式行情源，需要 API Key，适合第一版真实行情。",
+            requiresAPIKey: true,
+            requiresEndpoint: false
+        ),
+        StockProviderOption(
+            id: "alphavantage",
+            title: "Alpha Vantage",
+            subtitle: "需要 API Key，免费额度较低，适合低频刷新或兜底验证。",
+            requiresAPIKey: true,
+            requiresEndpoint: false
+        ),
+        StockProviderOption(
+            id: "mock",
+            title: "Mock 演示数据",
+            subtitle: "不需要 API Key，仅用于调试 UI，价格不是真实行情。",
+            requiresAPIKey: false,
+            requiresEndpoint: false
+        )
+    ]
+
     @ObservedObject var viewModel: FundViewModel
+    @ObservedObject var stockViewModel: StockViewModel
     @Binding var themeMode: String
     @Environment(\.dismiss) private var dismiss
 
     @State private var showModelConfig = false
+    @State private var showStockProviderConfig = false
     @State private var editModel = ""
     @State private var editEndpoint = ""
     @State private var editApiKey = ""
     @State private var testStatus = ""
+    @State private var editStockProvider = "finnhub"
+    @State private var editStockApiKey = ""
+    @State private var stockTestStatus = ""
+    @State private var editStockEndpoint = ""
 
     var body: some View {
         ZStack {
@@ -755,7 +1099,7 @@ private struct SettingsPageView: View {
                     Rectangle().fill(Color(hex: 0x262626).opacity(0.2)).frame(height: 1)
                 }
 
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
                         sectionTitle("AI 智能分析")
 
@@ -815,7 +1159,7 @@ private struct SettingsPageView: View {
                                                 .font(.system(size: 14, weight: .medium))
                                                 .foregroundStyle(.white)
                                                 .frame(maxWidth: .infinity, minHeight: 41)
-                                                .background(RoundedRectangle(cornerRadius: 12).fill(Color(hex: 0x2B7FFF)))
+                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x2B7FFF)))
                                         }
                                         .buttonStyle(.plain)
 
@@ -834,11 +1178,104 @@ private struct SettingsPageView: View {
                                                 .font(.system(size: 14, weight: .medium))
                                                 .foregroundStyle(Color(hex: 0xFAFAFA))
                                                 .frame(maxWidth: .infinity, minHeight: 41)
-                                                .background(RoundedRectangle(cornerRadius: 12).fill(Color(hex: 0x262626).opacity(0.6)))
+                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x262626).opacity(0.6)))
                                         }
                                         .buttonStyle(.plain)
                                     }
                                     .padding(.top, 4)
+                                }
+                                .padding(16)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        }
+
+                        sectionTitle("行情数据源")
+                            .padding(.top, 12)
+
+                        settingCard {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.25)) {
+                                    showStockProviderConfig.toggle()
+                                    if showStockProviderConfig {
+                                        editStockProvider = stockViewModel.providerConfig.provider
+                                        editStockApiKey = stockViewModel.providerConfig.apiKey
+                                        editStockEndpoint = stockViewModel.providerConfig.endpoint
+                                        stockTestStatus = ""
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "chart.line.uptrend.xyaxis")
+                                        .font(.system(size: 18))
+                                        .foregroundStyle(Color(hex: 0xFAFAFA))
+                                        .frame(width: 18, height: 18)
+                                    Text("美股行情")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Color(hex: 0xFAFAFA))
+                                    Spacer()
+                                    Text(stockProviderTitle(for: stockViewModel.providerConfig.provider))
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
+                                        .rotationEffect(.degrees(showStockProviderConfig ? 90 : 0))
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(height: 50.5)
+                            }
+                            .buttonStyle(.plain)
+
+                            if showStockProviderConfig {
+                                Rectangle()
+                                    .fill(Color(hex: 0x262626).opacity(0.2))
+                                    .frame(height: 1)
+                                    .padding(.horizontal, 16)
+
+                                VStack(spacing: 14) {
+                                    stockProviderPicker
+                                    if selectedStockProvider.requiresEndpoint {
+                                        settingsField(label: "BRIDGE URL", text: $editStockEndpoint)
+                                    }
+                                    if selectedStockProvider.requiresAPIKey {
+                                        settingsField(label: "API KEY", text: $editStockApiKey, isSecure: true)
+                                    } else if selectedStockProvider.requiresEndpoint {
+                                        settingsField(label: "ACCESS TOKEN", text: $editStockApiKey, isSecure: true)
+                                    }
+
+                                    HStack(spacing: 10) {
+                                        Button {
+                                            stockViewModel.saveProviderConfig(provider: editStockProvider, apiKey: editStockApiKey, endpoint: editStockEndpoint)
+                                        } label: {
+                                            Text("保存")
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(.white)
+                                                .frame(maxWidth: .infinity, minHeight: 41)
+                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x2B7FFF)))
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            stockTestStatus = "测试中..."
+                                            Task {
+                                                let result = await stockViewModel.testProviderConfig(provider: editStockProvider, apiKey: editStockApiKey, endpoint: editStockEndpoint)
+                                                stockTestStatus = result
+                                            }
+                                        } label: {
+                                            Text(stockTestStatus.isEmpty ? "测试" : stockTestStatus)
+                                                .font(.system(size: 14, weight: .medium))
+                                                .foregroundStyle(Color(hex: 0xFAFAFA))
+                                                .frame(maxWidth: .infinity, minHeight: 41)
+                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x262626).opacity(0.6)))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(.top, 4)
+
+                                    Text(selectedStockProvider.subtitle)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .padding(16)
                                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -851,6 +1288,88 @@ private struct SettingsPageView: View {
             }
         }
         .swipeBackGesture(onBack: { dismiss() })
+    }
+
+    private var selectedStockProvider: StockProviderOption {
+        stockProviderOptions.first { $0.id == normalizedStockProvider(editStockProvider) } ?? stockProviderOptions[0]
+    }
+
+    private var stockProviderPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("PROVIDER")
+                .font(.system(size: 11, weight: .medium))
+                .tracking(0.34)
+                .textCase(.uppercase)
+                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+
+            Menu {
+                ForEach(stockProviderOptions) { option in
+                    Button {
+                        editStockProvider = option.id
+                        stockTestStatus = ""
+                        if !option.requiresAPIKey && !option.requiresEndpoint {
+                            editStockApiKey = ""
+                            editStockEndpoint = ""
+                    } else if !option.requiresEndpoint {
+                        editStockEndpoint = ""
+                    }
+                } label: {
+                    HStack {
+                        if option.id == selectedStockProvider.id {
+                            Image(systemName: "checkmark")
+                        }
+                        Text(option.title)
+                    }
+                }
+            }
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedStockProvider.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(Color(hex: 0xFAFAFA).opacity(0.75))
+                        Text(providerRequirementText(selectedStockProvider))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 52)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color(hex: 0x2C2C2E))
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func stockProviderTitle(for provider: String) -> String {
+        stockProviderOptions.first { $0.id == normalizedStockProvider(provider) }?.title ?? provider.capitalized
+    }
+
+    private func providerRequirementText(_ option: StockProviderOption) -> String {
+        if option.requiresEndpoint {
+            return "需要 Bridge URL"
+        }
+        return option.requiresAPIKey ? "需要 API Key" : "无需 API Key"
+    }
+
+    private func normalizedStockProvider(_ provider: String) -> String {
+        switch provider.lowercased() {
+        case "alpha_vantage", "alpha-vantage", "alpha vantage":
+            return "alphavantage"
+        case "ths_bridge", "ths-bridge", "ths bridge", "ths":
+            return "thsbridge"
+        default:
+            return provider.lowercased()
+        }
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -885,9 +1404,9 @@ private struct SettingsPageView: View {
             .padding(.vertical, 10)
             .frame(height: 43)
             .background(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 14)
                     .fill(Color(hex: 0x2C2C2E))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
             )
         }
     }
@@ -959,8 +1478,8 @@ private struct PerformanceChartView: View {
 
     private var chartWithStyle: some View {
         lineChart.chartForegroundStyleScale([
-            "本基金": Color(hex: 0x2B7FFF),
-            "沪深300": Color(hex: 0xFF9500)
+            "本基金": AppVisual.fundLine,
+            "沪深300": AppVisual.indexLine
         ])
     }
 
@@ -1162,11 +1681,18 @@ private struct FundDailyPerformanceChartView: View {
 }
 
 private struct FundEditorView: View {
+    private enum Field: Hashable {
+        case code
+        case cost
+        case shares
+    }
+
     let editing: FundPosition?
     @ObservedObject var viewModel: FundViewModel
     let displayName: String?
     let onDelete: (_ id: String) -> Void
-    let onSave: (_ editingID: String?, _ code: String, _ cost: Double, _ shares: Double) -> Void
+    let onSave: (_ editingID: String?, _ code: String, _ cost: Double, _ shares: Double, _ fundName: String?) -> Void
+    var onCancel: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var code = ""
@@ -1174,6 +1700,31 @@ private struct FundEditorView: View {
     @State private var shares = ""
     @State private var isSaving = false
     @State private var showInvalidCodeAlert = false
+    @State private var searchResults: [FundSearchResult] = []
+    @State private var isSearching = false
+    @State private var selectedFundName: String?
+    @State private var searchTask: Task<Void, Never>?
+    @FocusState private var focusedField: Field?
+
+    init(
+        editing: FundPosition?,
+        viewModel: FundViewModel,
+        displayName: String?,
+        onDelete: @escaping (_ id: String) -> Void,
+        onSave: @escaping (_ editingID: String?, _ code: String, _ cost: Double, _ shares: Double, _ fundName: String?) -> Void,
+        onCancel: (() -> Void)? = nil
+    ) {
+        self.editing = editing
+        self.viewModel = viewModel
+        self.displayName = displayName
+        self.onDelete = onDelete
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _code = State(initialValue: editing?.fundCode ?? "")
+        _cost = State(initialValue: editing.map { NumberFormat.fixed($0.costPrice, digits: 4) } ?? "")
+        _shares = State(initialValue: editing.map { NumberFormat.fixed($0.shares, digits: 4) } ?? "")
+        _selectedFundName = State(initialValue: displayName ?? editing?.fundName)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1182,7 +1733,13 @@ private struct FundEditorView: View {
                 VStack(spacing: 0) {
                     ZStack {
                         HStack {
-                            Button("取消") { dismiss() }
+                            Button("取消") {
+                                if let onCancel {
+                                    onCancel()
+                                } else {
+                                    dismiss()
+                                }
+                            }
                                 .font(.system(size: 16, weight: .medium))
                                 .foregroundStyle(Color(hex: 0x2B7FFF))
                                 .frame(minWidth: 72, alignment: .leading)
@@ -1196,7 +1753,7 @@ private struct FundEditorView: View {
                                     await MainActor.run {
                                         isSaving = false
                                         if valid {
-                                            onSave(editing?.id, code, c, s)
+                                            onSave(editing?.id, code, c, s, selectedFundName ?? displayName)
                                         } else {
                                             showInvalidCodeAlert = true
                                         }
@@ -1219,7 +1776,7 @@ private struct FundEditorView: View {
                         Rectangle().fill(Color(hex: 0x262626).opacity(0.2)).frame(height: 1)
                     }
 
-                    ScrollView {
+                    ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 12) {
                             HStack(spacing: 10) {
                                 Image(systemName: "magnifyingglass")
@@ -1230,9 +1787,12 @@ private struct FundEditorView: View {
                                     .font(.system(size: 15))
                                     .foregroundStyle(.white)
                                     .tint(.white)
+                                    .focused($focusedField, equals: .code)
                                 if !code.isEmpty {
                                     Button {
                                         code = ""
+                                        selectedFundName = nil
+                                        searchResults = []
                                     } label: {
                                         Text("✕")
                                             .font(.system(size: 14, weight: .medium))
@@ -1243,6 +1803,10 @@ private struct FundEditorView: View {
                             }
                             .padding(.horizontal, 16)
                             .frame(height: 52.5)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                focusedField = .code
+                            }
                             .background(
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                                     .fill(Color(hex: 0x0A0A0A))
@@ -1250,13 +1814,15 @@ private struct FundEditorView: View {
                                     .shadow(color: .black.opacity(0.1), radius: 3, y: 1)
                             )
 
-                            if let displayName, editing != nil {
+                            fundSearchResultsSection
+
+                            if let name = selectedFundName ?? displayName, !name.isEmpty {
                                 HStack(spacing: 10) {
                                     Image(systemName: "checkmark.circle")
                                         .font(.system(size: 16))
                                         .foregroundStyle(Color(hex: 0x51A2FF))
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(displayName)
+                                        Text(name)
                                             .font(.system(size: 14, weight: .medium))
                                             .foregroundStyle(Color(hex: 0xDBEAFE))
                                         Text("基金类型信息")
@@ -1268,16 +1834,16 @@ private struct FundEditorView: View {
                                 .padding(.horizontal, 17)
                                 .frame(height: 67)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 16)
+                                    RoundedRectangle(cornerRadius: 14)
                                         .fill(Color(hex: 0x1C398E).opacity(0.2))
-                                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(hex: 0x1447E6).opacity(0.3), lineWidth: 1))
+                                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x1447E6).opacity(0.3), lineWidth: 1))
                                 )
                             }
 
                             VStack(spacing: 0) {
-                                rowField(title: "持仓成本", prefix: nil, text: $cost)
+                                rowField(title: "持仓成本", prefix: nil, text: $cost, field: .cost)
                                 Divider().overlay(Color(hex: 0x262626).opacity(0.15))
-                                rowField(title: "持有份额", prefix: nil, text: $shares)
+                                rowField(title: "持有份额", prefix: nil, text: $shares, field: .shares)
                             }
                             .background(
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1314,24 +1880,111 @@ private struct FundEditorView: View {
                 }
             }
         }
+        .onChange(of: code) { newValue in
+            selectedFundName = nil
+            scheduleFundSearch(for: newValue)
+        }
         .onAppear {
-            guard let editing else { return }
-            code = editing.fundCode
-            cost = NumberFormat.fixed(editing.costPrice, digits: 4)
-            shares = NumberFormat.fixed(editing.shares, digits: 4)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                focusedField = .code
+            }
         }
         .alert("基金代码无效", isPresented: $showInvalidCodeAlert) {
             Button("确定", role: .cancel) { }
         } message: {
             Text("请检查基金代码是否正确，无法从服务器获取该基金数据")
         }
+        .swipeBackGesture(onBack: {
+            if let onCancel {
+                onCancel()
+            } else {
+                dismiss()
+            }
+        })
     }
 
     private var isValid: Bool {
         FundPosition.normalizeCode(code).count == 6 && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
     }
 
-    private func rowField(title: String, prefix: String?, text: Binding<String>) -> some View {
+    @ViewBuilder
+    private var fundSearchResultsSection: some View {
+        if isSearching || !searchResults.isEmpty {
+            VStack(spacing: 0) {
+                if isSearching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Color(hex: 0xA1A1A1))
+                        Text("识别中...")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.65))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 44)
+                }
+
+                ForEach(searchResults) { result in
+                    Button {
+                        code = result.code
+                        selectedFundName = result.name
+                        searchResults = []
+                        isSearching = false
+                        focusedField = .cost
+                    } label: {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.code)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                Text(result.name)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: 54)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color(hex: 0x0A0A0A))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.1), radius: 3, y: 1)
+            )
+        }
+    }
+
+    private func scheduleFundSearch(for raw: String) {
+        searchTask?.cancel()
+        let normalized = FundPosition.normalizeCode(raw)
+        guard normalized.count == 6 else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+        searchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+            isSearching = true
+            let results = await viewModel.searchFunds(query: normalized)
+            guard !Task.isCancelled else { return }
+            searchResults = results
+            if let first = results.first {
+                selectedFundName = first.name
+            }
+            isSearching = false
+        }
+    }
+
+    private func rowField(title: String, prefix: String?, text: Binding<String>, field: Field) -> some View {
         HStack(spacing: 8) {
             Text(title)
                 .font(.system(size: 15))
@@ -1348,9 +2001,14 @@ private struct FundEditorView: View {
                 .font(.system(size: 15))
                 .foregroundStyle(.white)
                 .tint(.white)
+                .focused($focusedField, equals: field)
         }
         .padding(.horizontal, 16)
         .frame(height: 51.5)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focusedField = field
+        }
     }
 }
 
@@ -1388,7 +2046,7 @@ private struct AIAnalysisPageView: View {
                 .frame(height: 49)
                 .background(Color(hex: 0x0A0A0A))
 
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 12) {
                         Button {
                             Task { await viewModel.runAIAnalysis(mode: .realtime, auto: false) }
@@ -1454,13 +2112,13 @@ private struct AIAnalysisPageView: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(
                     dark
                         ? LinearGradient(colors: [Color(hex: 0x1C398E).opacity(0.2), Color(hex: 0x59168B).opacity(0.15), Color(hex: 0x312C85).opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
                         : LinearGradient(colors: [Color(hex: 0xEFF6FF), Color(hex: 0xFAF5FF), Color(hex: 0xEEF2FF)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 )
-                .overlay(RoundedRectangle(cornerRadius: 20).stroke(dark ? Color(hex: 0x193CB8).opacity(0.3) : Color(hex: 0xDBEAFE).opacity(0.8), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(dark ? Color(hex: 0x193CB8).opacity(0.3) : Color(hex: 0xDBEAFE).opacity(0.8), lineWidth: 1))
         )
     }
 
@@ -1475,9 +2133,9 @@ private struct AIAnalysisPageView: View {
         .padding(17)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: 18)
                 .fill(dark ? Color(hex: 0x7B3306).opacity(0.2) : Color(hex: 0xFFFBEB))
-                .overlay(RoundedRectangle(cornerRadius: 20).stroke(dark ? Color(hex: 0x973C00).opacity(0.3) : Color(hex: 0xFEF3C6), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(dark ? Color(hex: 0x973C00).opacity(0.3) : Color(hex: 0xFEF3C6), lineWidth: 1))
         )
     }
 }

@@ -27,6 +27,13 @@ struct FundPosition: Identifiable, Codable, Equatable {
     }
 }
 
+struct FundSearchResult: Identifiable, Equatable {
+    let code: String
+    let name: String
+
+    var id: String { code }
+}
+
 struct NavPoint: Equatable {
     let date: String
     let value: Double
@@ -54,6 +61,7 @@ struct DailyPerformancePoint: Equatable, Identifiable {
 
 /// 业绩走势时间范围
 enum PerformanceRange: String, CaseIterable {
+    case d7 = "近7日"
     case m1 = "近1月"
     case m3 = "近3月"
     case m6 = "近6月"
@@ -62,6 +70,7 @@ enum PerformanceRange: String, CaseIterable {
 
     var tradingDays: Int {
         switch self {
+        case .d7: return 7
         case .m1: return 21
         case .m3: return 63
         case .m6: return 126

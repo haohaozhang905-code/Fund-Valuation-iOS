@@ -61,7 +61,7 @@ struct FundDataService {
         let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
         guard let url = URL(string: urlString) else { return (nil, nil) }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let text = String(data: data, encoding: .utf8) else { return (nil, nil) }
             let fundName = extractJSString(text: text, variable: "fS_name")
             guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return (nil, fundName) }
@@ -77,7 +77,7 @@ struct FundDataService {
         let urlString = "\(f10Base)?type=lsjz&code=\(fundCode)&page=1&per=5"
         guard let url = URL(string: urlString) else { return nil }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let text = String(data: data, encoding: .utf8) else { return nil }
             return parseF10LsJzContent(text)
         } catch {
@@ -122,7 +122,7 @@ struct FundDataService {
         let urlString = "\(valuationBase)\(fundCode).js?t=\(Int(Date().timeIntervalSince1970))"
         guard let url = URL(string: urlString) else { return nil }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let text = String(data: data, encoding: .utf8) else { return nil }
             guard let json = extractJSONP(from: text, callbackName: "jsonpgz") else { return nil }
             return try JSONDecoder().decode(FundValuationResponse.self, from: Data(json.utf8))
@@ -157,7 +157,7 @@ struct FundDataService {
         let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
         guard let url = URL(string: urlString) else { return [] }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let text = String(data: data, encoding: .utf8) else { return [] }
             guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return [] }
             guard let arr = try parseNetWorthTrend(rawArray) else { return [] }
@@ -185,7 +185,7 @@ struct FundDataService {
         ]
         guard let url = comp.url else { return [] }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd"
@@ -218,7 +218,7 @@ struct FundDataService {
         let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
         guard let url = URL(string: urlString) else { return [] }
         do {
-            let (data, _) = try await Self.session.data(from: url)
+            let (data, _) = try await fetchData(from: url)
             guard let text = String(data: data, encoding: .utf8) else { return [] }
             guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return [] }
             guard let arr = try parseNetWorthTrend(rawArray) else { return [] }
@@ -279,6 +279,21 @@ struct FundDataService {
         guard let data = jsonArray.data(using: .utf8) else { return nil }
         let raw = try JSONSerialization.jsonObject(with: data)
         return raw as? [[String: Any]]
+    }
+
+    private func fetchData(from url: URL, attempts: Int = 2) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 1...attempts {
+            do {
+                return try await Self.session.data(from: url)
+            } catch {
+                lastError = error
+                if attempt < attempts {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 350_000_000)
+                }
+            }
+        }
+        throw lastError ?? FundServiceError.invalidResponse
     }
 
     private func buildNavPair(points: [[String: Any]]) -> NavPair? {
@@ -490,5 +505,27 @@ enum NumberFormat {
         guard let value else { return "--" }
         let symbol = value >= 0 ? "+" : ""
         return "\(symbol)\(fixed(value, digits: 2))%"
+    }
+
+    static func usd(_ value: Double?, digits: Int = 2, signed: Bool = false) -> String {
+        guard let value else { return "--" }
+        let symbol = signed && value >= 0 ? "+" : ""
+        return "\(symbol)$\(fixed(value, digits: digits))"
+    }
+
+    static func signedUSD(_ value: Double?, digits: Int = 2) -> String {
+        usd(value, digits: digits, signed: true)
+    }
+
+    static func quantity(_ value: Double?, maxDigits: Int = 4) -> String {
+        guard let value else { return "--" }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = maxDigits
+        formatter.groupingSeparator = ","
+        formatter.decimalSeparator = "."
+        formatter.usesGroupingSeparator = abs(value) >= 1000
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }

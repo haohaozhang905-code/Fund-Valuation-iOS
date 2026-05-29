@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 import Combine
 
 @MainActor
@@ -81,16 +80,40 @@ final class FundViewModel: ObservableObject {
         return (fund, index)
     }
 
-    func addOrUpdateFund(editingID: String?, code: String, costPrice: Double, shares: Double) -> Bool {
+    func searchFunds(query: String) async -> [FundSearchResult] {
+        let normalized = FundPosition.normalizeCode(query)
+        guard normalized.count == 6 else { return [] }
+        async let valuation = dataService.fetchValuation(fundCode: normalized)
+        async let navResult = dataService.fetchNavWithName(fundCode: normalized)
+        let (v, nav) = await (valuation, navResult)
+        let name = (v?.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? v?.name : nil)
+            ?? (nav.1?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? nav.1 : nil)
+        guard v != nil || nav.0?.latest != nil else { return [] }
+        return [FundSearchResult(code: normalized, name: name ?? normalized)]
+    }
+
+    func addOrUpdateFund(editingID: String?, code: String, costPrice: Double, shares: Double, fundName: String? = nil) -> Bool {
         let normalized = FundPosition.normalizeCode(code)
         guard normalized.count == 6, costPrice > 0, shares > 0 else { return false }
 
-        if let editingID, let idx = funds.firstIndex(where: { $0.id == editingID }) {
+        if let duplicateIdx = funds.firstIndex(where: { $0.fundCode == normalized && $0.id != editingID }) {
+            funds[duplicateIdx].costPrice = costPrice
+            funds[duplicateIdx].shares = shares
+            if let fundName {
+                funds[duplicateIdx].fundName = fundName
+            }
+            if let editingID {
+                funds.removeAll { $0.id == editingID }
+            }
+        } else if let editingID, let idx = funds.firstIndex(where: { $0.id == editingID }) {
             funds[idx].fundCode = normalized
             funds[idx].costPrice = costPrice
             funds[idx].shares = shares
+            if let fundName {
+                funds[idx].fundName = fundName
+            }
         } else {
-            funds.append(FundPosition(fundCode: normalized, costPrice: costPrice, shares: shares))
+            funds.append(FundPosition(fundCode: normalized, costPrice: costPrice, shares: shares, fundName: fundName ?? ""))
         }
         persistFunds()
         return true
@@ -110,7 +133,7 @@ final class FundViewModel: ObservableObject {
         let tradingDay = DateHelper.nowTradingDay()
         let beforeMarket = DateHelper.marketBeforeOpenToday()
         let afterMarket = DateHelper.marketAfterCloseToday()
-        summary.tradingBadge = (marketOpen ? "交易中" : (tradingDay ? "已收盘/非交易时段" : "非交易日")) + " · " + timeString()
+        summary.tradingBadge = (marketOpen ? "交易中" : "休市") + " · " + timeString()
 
         if funds.isEmpty {
             snapshots = []
@@ -226,10 +249,17 @@ final class FundViewModel: ObservableObject {
 
         if marketOpen {
             // 1. 交易中：实时估值，今日基准=昨日净值（最新已公布）
-            currentPrice = gsz ?? latestPublished?.value ?? dwjz
-            currentPriceLabel = gsz != nil ? "估值" : "净值"
-            dataDate = String((valuation?.gztime ?? latestPublished?.date ?? "").prefix(10))
-            todayBase = latestPublished?.value
+            if let gsz {
+                currentPrice = gsz
+                currentPriceLabel = "估值"
+                dataDate = String((valuation?.gztime ?? latestPublished?.date ?? "").prefix(10))
+                todayBase = latestPublished?.value
+            } else {
+                currentPrice = latestPublished?.value ?? dwjz
+                currentPriceLabel = "净值"
+                dataDate = latestPublished?.date ?? String((valuation?.jzrq ?? "").prefix(10))
+                todayBase = previousNav?.value
+            }
         } else if beforeMarket || !tradingDay {
             // 下个交易日未开盘：展示上个交易日数据，当日收益 = (最新净值 - 前日净值) × 份额
             currentPrice = latestPublished?.value ?? dwjz

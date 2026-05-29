@@ -253,7 +253,8 @@
 				DEVELOPMENT_TEAM = R88SVJ66WP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Fund Valuation";
+				INFOPLIST_KEY_CFBundleName = "FinMate";
+				INFOPLIST_KEY_CFBundleDisplayName = "FinMate";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -290,7 +291,8 @@
 				DEVELOPMENT_TEAM = R88SVJ66WP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Fund Valuation";
+				INFOPLIST_KEY_CFBundleName = "FinMate";
+				INFOPLIST_KEY_CFBundleDisplayName = "FinMate";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
