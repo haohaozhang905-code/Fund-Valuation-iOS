@@ -5,11 +5,10 @@
 ## 运行
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app:app --host 127.0.0.1 --port 8787 --reload
+./run_local.sh
 ```
+
+`run_local.sh` 会安装依赖、执行迁移，并用 `0.0.0.0:8787` 启动服务。这样模拟器和真机都能访问。
 
 iOS 设置页选择：
 
@@ -17,15 +16,29 @@ iOS 设置页选择：
 - Bridge URL: `http://127.0.0.1:8787`
 - Access Token: 默认可空；如果设置了 `BRIDGE_ACCESS_TOKEN`，这里填写同一个值
 
+账号服务地址：
+
+- 模拟器：`http://127.0.0.1:8787`
+- 真机：`http://Mac.local:8787`，或 `http://<电脑局域网 IP>:8787`
+
 ## 环境变量
 
 ```text
 BRIDGE_ACCESS_TOKEN=
 THS_UPSTREAM_BASE_URL=
 THS_UPSTREAM_TOKEN=
+DATABASE_URL=sqlite:///./ths_bridge.db
+JWT_SECRET=change-me
+ACCESS_TOKEN_MINUTES=43200
 ```
 
 `THS_UPSTREAM_BASE_URL` 保持泛化命名。上游可以是同花顺 iFinD、thsdk、Westock，或另一个已经封装好行情能力的 HTTP 服务。Bridge 的职责是把上游响应适配成 iOS 需要的统一字段。
+
+账号与持仓同步：
+
+- 本地开发默认使用 `sqlite:///./ths_bridge.db`。
+- 生产建议使用 PostgreSQL，并设置强随机 `JWT_SECRET`。
+- 邮箱验证码第一版会写入服务日志；接真实邮件服务时替换 `mailer.py`。
 
 ## App-facing API
 
@@ -33,6 +46,13 @@ THS_UPSTREAM_TOKEN=
 GET /v1/stocks/search?q=MU&market=US
 GET /v1/stocks/quote?symbol=MU&market=US
 GET /v1/stocks/kline?symbol=MU&market=US&count=120
+POST /v1/auth/register
+POST /v1/auth/login
+POST /v1/auth/password-reset/request
+POST /v1/auth/password-reset/confirm
+GET /v1/portfolio
+PUT /v1/portfolio
+DELETE /v1/account
 ```
 
 行情响应建议字段：
@@ -62,4 +82,5 @@ GET /v1/stocks/kline?symbol=MU&market=US&count=120
 - 增加批量报价接口，减少 iOS 多持仓并发请求。
 - 统一错误码：鉴权失败、上游超时、限流、无数据、字段异常。
 - 后续可承载支付宝基金截图 OCR 导入能力。
-
+- 接入真实邮件发送 Provider，替换日志验证码。
+- 生产环境改为 Alembic 管理迁移，不依赖启动时自动建表。

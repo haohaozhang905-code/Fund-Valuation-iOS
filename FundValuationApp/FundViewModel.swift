@@ -42,10 +42,22 @@ final class FundViewModel: ObservableObject {
         loadAIConfig()
         loadIntradayCache()
         aiAutoEnabled = UserDefaults.standard.string(forKey: aiAutoKey) != "0"
-        if funds.isEmpty {
-            funds = [FundPosition(fundCode: "013841", costPrice: 1.6153, shares: 4975.88)]
-            persistFunds()
-        }
+    }
+
+    func exportLocalFunds() -> [FundPosition] {
+        funds
+    }
+
+    func applySyncedFunds(_ syncedFunds: [FundPosition]) {
+        funds = syncedFunds
+        persistFunds()
+    }
+
+    func clearLocalFunds() {
+        funds = []
+        snapshots = []
+        summary = PortfolioSummary()
+        persistFunds()
     }
 
     func toggleTheme(current: String) -> String {

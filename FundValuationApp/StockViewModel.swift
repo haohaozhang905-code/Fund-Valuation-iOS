@@ -46,6 +46,27 @@ final class StockViewModel: ObservableObject {
         rebuildSnapshotsFromCache()
     }
 
+    func exportLocalPositions() -> [StockPosition] {
+        positions
+    }
+
+    func applySyncedPositions(_ syncedPositions: [StockPosition]) {
+        positions = syncedPositions
+        persistPositions()
+        rebuildSnapshotsFromCache()
+    }
+
+    func clearLocalPositions() {
+        positions = []
+        snapshots = []
+        summary = StockPortfolioSummary()
+        quoteCache = [:]
+        klineCache = [:]
+        persistPositions()
+        persistQuoteCache()
+        persistKlineCache()
+    }
+
     func refreshAll() async {
         if isRefreshing { return }
         isRefreshing = true

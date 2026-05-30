@@ -21,8 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 4) 拷贝应用代码
-COPY app.py .
-COPY westock_client.py .
+COPY . .
 
 # 5) 暴露端口
 EXPOSE 8080

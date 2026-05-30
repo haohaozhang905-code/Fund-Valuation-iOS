@@ -6,9 +6,10 @@ SwiftUI 持仓看板 App，当前覆盖 A 股基金和美股股票两类资产�
 
 | 模块 | 能力 |
 |---|---|
-| 基金持仓 | 新增、编辑、删除、重复基金覆盖、本地持久化 |
+| 账号系统 | 邮箱注册/登录、退出登录、注销账号、邮箱验证码找回密码 |
+| 基金持仓 | 新增、编辑、删除、重复基金覆盖、本地缓存、登录后同步 |
 | 基金行情 | 天天基金估值、东方财富净值、F10 兜底、沪深300走势对比 |
-| 美股持仓 | 新增、编辑、删除、重复股票覆盖、本地持久化 |
+| 美股持仓 | 新增、编辑、删除、重复股票覆盖、本地缓存、登录后同步 |
 | 美股行情 | Finnhub、Alpha Vantage、THS Bridge、Mock Provider |
 | 股票搜索 | 按 Provider 搜索 symbol 和公司名称 |
 | K 线 | 美股 K 线展示、区间切换、缓存兜底 |
@@ -21,6 +22,12 @@ SwiftUI 持仓看板 App，当前覆盖 A 股基金和美股股票两类资产�
 ```text
 FundValuationApp/
 ├── FundValuationApp.swift
+├── RootView.swift
+├── AuthViews.swift
+├── AuthModels.swift
+├── AuthService.swift
+├── SessionViewModel.swift
+├── KeychainStore.swift
 ├── MainView.swift
 ├── FundModels.swift
 ├── FundServices.swift
@@ -32,6 +39,12 @@ FundValuationApp/
 
 ths-bridge/
 ├── app.py
+├── auth_service.py
+├── database.py
+├── models.py
+├── schemas.py
+├── mailer.py
+├── alembic/
 ├── requirements.txt
 └── README.md
 
@@ -89,4 +102,3 @@ xcodebuild -project FundValuationAPP.xcodeproj -scheme FundValuationApp -destina
 ## 文档
 
 详细产品原则、架构、数据源、UI 规范和验收清单见 `docs/`。后续修改交互、数据源、刷新策略或视觉规范时，需要同步更新对应 md 文件。
-

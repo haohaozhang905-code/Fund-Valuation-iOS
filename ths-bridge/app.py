@@ -5,20 +5,64 @@ THS Bridge —— 基于 westock-data-clawhub 的美股行情 HTTP 桥接服务
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
 import sys
 # 优先同级目录加载 westock_client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import westock_client as wc
+from auth_service import (
+    create_access_token,
+    current_user,
+    generate_reset_code,
+    hash_password,
+    hash_reset_code,
+    normalize_email,
+    verify_password,
+    verify_reset_code,
+)
+from database import get_db, init_db
+from mailer import mailer
+from models import FundPositionDB, PasswordResetCode, StockPositionDB, User, utcnow
+from schemas import (
+    AuthRequest,
+    AuthResponse,
+    FundPositionOut,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PortfolioIn,
+    PortfolioOut,
+    StockPositionOut,
+    UserOut,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ths-bridge")
 
-app = FastAPI(title="THS Bridge", version="0.2.0")
+app = FastAPI(title="THS Bridge", version="0.3.0")
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
+
+def auth_response(user: User) -> AuthResponse:
+    return AuthResponse(
+        accessToken=create_access_token(user),
+        user=UserOut(id=user.id, email=user.email_lower),
+    )
+
+
+def as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def require_access_token(authorization: str | None) -> None:
@@ -62,6 +106,190 @@ def resolve_us_code(ticker: str) -> str:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "fetchedAt": now_iso()}
+
+
+# ====== 用户账号 ======
+
+@app.post("/v1/auth/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def register(payload: AuthRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    email = normalize_email(str(payload.email))
+    existing = db.scalar(select(User).where(User.email_lower == email))
+    if existing is not None and existing.deleted_at is None:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if existing is not None:
+        existing.password_hash = hash_password(payload.password)
+        existing.deleted_at = None
+        existing.updated_at = utcnow()
+        user = existing
+    else:
+        user = User(email_lower=email, password_hash=hash_password(payload.password))
+        db.add(user)
+    db.commit()
+    db.refresh(user)
+    return auth_response(user)
+
+
+@app.post("/v1/auth/login", response_model=AuthResponse)
+def login(payload: AuthRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    email = normalize_email(str(payload.email))
+    user = db.scalar(select(User).where(User.email_lower == email, User.deleted_at.is_(None)))
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return auth_response(user)
+
+
+@app.post("/v1/auth/password-reset/request")
+def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+    email = normalize_email(str(payload.email))
+    user = db.scalar(select(User).where(User.email_lower == email, User.deleted_at.is_(None)))
+    if user is not None:
+        code = generate_reset_code()
+        reset = PasswordResetCode(
+            user_id=user.id,
+            code_hash=hash_reset_code(code),
+            expires_at=utcnow() + timedelta(minutes=10),
+        )
+        db.add(reset)
+        db.commit()
+        mailer.send_password_reset_code(email, code)
+    return {"status": "ok"}
+
+
+@app.post("/v1/auth/password-reset/confirm", response_model=AuthResponse)
+def confirm_password_reset(payload: PasswordResetConfirmRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    email = normalize_email(str(payload.email))
+    user = db.scalar(select(User).where(User.email_lower == email, User.deleted_at.is_(None)))
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid reset code")
+    reset = db.scalar(
+        select(PasswordResetCode)
+        .where(PasswordResetCode.user_id == user.id, PasswordResetCode.used_at.is_(None))
+        .order_by(PasswordResetCode.created_at.desc())
+    )
+    now = utcnow()
+    if reset is None or as_utc(reset.expires_at) < now or reset.attempt_count >= 5:
+        raise HTTPException(status_code=400, detail="Invalid reset code")
+    reset.attempt_count += 1
+    if not verify_reset_code(payload.code, reset.code_hash):
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid reset code")
+    reset.used_at = now
+    user.password_hash = hash_password(payload.newPassword)
+    user.updated_at = now
+    db.commit()
+    db.refresh(user)
+    return auth_response(user)
+
+
+@app.post("/v1/auth/logout")
+def logout(_: User = Depends(current_user)) -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.delete("/v1/account")
+def delete_account(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(delete(FundPositionDB).where(FundPositionDB.user_id == user.id))
+    db.execute(delete(StockPositionDB).where(StockPositionDB.user_id == user.id))
+    user.deleted_at = utcnow()
+    db.commit()
+    return {"status": "deleted"}
+
+
+# ====== 用户持仓 ======
+
+def normalize_fund_code(raw: str) -> str:
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[-6:].zfill(6)
+
+
+def normalize_symbol(raw: str) -> str:
+    return raw.strip().upper()
+
+
+def portfolio_response(user_id: int, db: Session) -> PortfolioOut:
+    funds = db.scalars(select(FundPositionDB).where(FundPositionDB.user_id == user_id).order_by(FundPositionDB.created_at)).all()
+    stocks = db.scalars(select(StockPositionDB).where(StockPositionDB.user_id == user_id).order_by(StockPositionDB.created_at)).all()
+    updated = utcnow()
+    return PortfolioOut(
+        funds=[
+            FundPositionOut(
+                id=f.id,
+                fundCode=f.fund_code,
+                fundName=f.fund_name,
+                costPrice=f.cost_price,
+                shares=f.shares,
+                clientUpdatedAt=f.client_updated_at,
+            )
+            for f in funds
+        ],
+        stocks=[
+            StockPositionOut(
+                id=s.id,
+                symbol=s.symbol,
+                displayName=s.display_name,
+                averageCost=s.average_cost,
+                shares=s.shares,
+                clientUpdatedAt=s.client_updated_at,
+            )
+            for s in stocks
+        ],
+        updatedAt=updated,
+    )
+
+
+@app.get("/v1/portfolio", response_model=PortfolioOut)
+def get_portfolio(user: User = Depends(current_user), db: Session = Depends(get_db)) -> PortfolioOut:
+    return portfolio_response(user.id, db)
+
+
+@app.put("/v1/portfolio", response_model=PortfolioOut)
+def replace_portfolio(
+    payload: PortfolioIn,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> PortfolioOut:
+    fund_codes: set[str] = set()
+    stock_symbols: set[str] = set()
+    for fund in payload.funds:
+        code = normalize_fund_code(fund.fundCode)
+        if len(code) != 6 or code in fund_codes:
+            raise HTTPException(status_code=422, detail="Duplicate or invalid fund code")
+        fund_codes.add(code)
+    for stock in payload.stocks:
+        symbol = normalize_symbol(stock.symbol)
+        if not symbol or symbol in stock_symbols:
+            raise HTTPException(status_code=422, detail="Duplicate or invalid stock symbol")
+        stock_symbols.add(symbol)
+
+    with db.begin_nested():
+        db.execute(delete(FundPositionDB).where(FundPositionDB.user_id == user.id))
+        db.execute(delete(StockPositionDB).where(StockPositionDB.user_id == user.id))
+        for fund in payload.funds:
+            db.add(
+                FundPositionDB(
+                    id=fund.id,
+                    user_id=user.id,
+                    fund_code=normalize_fund_code(fund.fundCode),
+                    fund_name=fund.fundName,
+                    cost_price=fund.costPrice,
+                    shares=fund.shares,
+                    client_updated_at=fund.clientUpdatedAt,
+                )
+            )
+        for stock in payload.stocks:
+            db.add(
+                StockPositionDB(
+                    id=stock.id,
+                    user_id=user.id,
+                    symbol=normalize_symbol(stock.symbol),
+                    display_name=stock.displayName,
+                    average_cost=stock.averageCost,
+                    shares=stock.shares,
+                    client_updated_at=stock.clientUpdatedAt,
+                )
+            )
+    db.commit()
+    return portfolio_response(user.id, db)
 
 
 # ====== 搜索 ======

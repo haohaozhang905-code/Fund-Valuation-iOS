@@ -13,6 +13,7 @@ private enum StockVisual {
 
 struct StockTabView: View {
     @ObservedObject var viewModel: StockViewModel
+    var onPortfolioChanged: () -> Void = {}
 
     @State private var showEditor = false
     @State private var editingPosition: StockPosition?
@@ -33,10 +34,12 @@ struct StockTabView: View {
                 },
                 onDelete: { id in
                     viewModel.deletePosition(id)
+                    onPortfolioChanged()
                     showEditor = false
                 },
                 onSave: { id, symbol, cost, shares, displayName in
                     if viewModel.addOrUpdatePosition(editingID: id, symbol: symbol, averageCost: cost, shares: shares, displayName: displayName) {
+                        onPortfolioChanged()
                         showEditor = false
                         Task { await viewModel.refreshAll() }
                     }
@@ -51,10 +54,12 @@ struct StockTabView: View {
                 onClose: { selectedSnapshot = nil },
                 onDelete: { id in
                     viewModel.deletePosition(id)
+                    onPortfolioChanged()
                     selectedSnapshot = nil
                 },
                 onSave: { id, symbol, cost, shares, displayName in
                     if viewModel.addOrUpdatePosition(editingID: id, symbol: symbol, averageCost: cost, shares: shares, displayName: displayName) {
+                        onPortfolioChanged()
                         Task { await viewModel.refreshAll() }
                     }
                 }

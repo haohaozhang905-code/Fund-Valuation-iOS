@@ -29,6 +29,7 @@ private enum AppVisual {
 }
 
 struct MainView: View {
+    @ObservedObject var session: SessionViewModel
     @StateObject private var viewModel = FundViewModel()
     @StateObject private var stockViewModel = StockViewModel()
     @AppStorage("fund_theme") private var themeMode: String = "system"
@@ -94,11 +95,13 @@ struct MainView: View {
                 },
                 onDelete: { id in
                     viewModel.deleteFund(id)
+                    syncPortfolio()
                     showEditor = false
                     Task { await viewModel.refreshAll() }
                 },
                 onSave: { id, code, cost, shares, fundName in
                     if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares, fundName: fundName) {
+                        syncPortfolio()
                         showEditor = false
                         Task { await viewModel.refreshAll() }
                     }
@@ -106,7 +109,13 @@ struct MainView: View {
             )
         }
         .fullScreenCover(isPresented: $showSettings) {
-            SettingsPageView(viewModel: viewModel, stockViewModel: stockViewModel, themeMode: $themeMode)
+            SettingsPageView(
+                viewModel: viewModel,
+                stockViewModel: stockViewModel,
+                session: session,
+                themeMode: $themeMode,
+                onClearLocalData: clearLocalData
+            )
         }
         .fullScreenCover(item: $selectedSnapshot) { snap in
             FundDetailPageView(
@@ -117,11 +126,13 @@ struct MainView: View {
                 onClose: { selectedSnapshot = nil },
                 onSave: { id, code, cost, shares, fundName in
                     if viewModel.addOrUpdateFund(editingID: id, code: code, costPrice: cost, shares: shares, fundName: fundName) {
+                        syncPortfolio()
                         Task { await viewModel.refreshAll() }
                     }
                 },
                 onDelete: { id in
                     viewModel.deleteFund(id)
+                    syncPortfolio()
                     selectedSnapshot = nil
                     Task { await viewModel.refreshAll() }
                 }
@@ -133,6 +144,7 @@ struct MainView: View {
         .task {
             viewModel.loadInitialData()
             stockViewModel.loadInitialData()
+            await session.bootstrapPortfolio(fundViewModel: viewModel, stockViewModel: stockViewModel)
             await refreshCurrentTab(force: true)
             startPeriodicRefresh()
         }
@@ -219,6 +231,19 @@ struct MainView: View {
         guard hasLoadedData else { return true }
         guard let lastRefreshAt else { return true }
         return Date().timeIntervalSince(lastRefreshAt) >= tabSwitchRefreshInterval
+    }
+
+    private func syncPortfolio() {
+        let funds = viewModel.funds
+        let stocks = stockViewModel.positions
+        Task {
+            await session.uploadPortfolio(funds: funds, stocks: stocks)
+        }
+    }
+
+    private func clearLocalData() {
+        viewModel.clearLocalFunds()
+        stockViewModel.clearLocalPositions()
     }
 
     private var pageBackground: Color {
@@ -333,7 +358,7 @@ struct MainView: View {
             }
         case .stocks:
             tabScrollPage(pageSize: pageSize, bottomPadding: 32) {
-                StockTabView(viewModel: stockViewModel)
+                StockTabView(viewModel: stockViewModel, onPortfolioChanged: syncPortfolio)
             }
         }
     }
@@ -1073,11 +1098,15 @@ private struct SettingsPageView: View {
 
     @ObservedObject var viewModel: FundViewModel
     @ObservedObject var stockViewModel: StockViewModel
+    @ObservedObject var session: SessionViewModel
     @Binding var themeMode: String
+    var onClearLocalData: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var showModelConfig = false
     @State private var showStockProviderConfig = false
+    @State private var showAccountConfig = false
+    @State private var showDeleteConfirm = false
     @State private var editModel = ""
     @State private var editEndpoint = ""
     @State private var editApiKey = ""
@@ -1120,7 +1149,12 @@ private struct SettingsPageView: View {
 
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
+                        sectionTitle("账号")
+
+                        accountCard
+
                         sectionTitle("AI 智能分析")
+                            .padding(.top, 12)
 
                         settingCard {
                             Button {
@@ -1307,6 +1341,96 @@ private struct SettingsPageView: View {
             }
         }
         .swipeBackGesture(onBack: { dismiss() })
+        .confirmationDialog("注销账号会删除云端持仓并退出登录。", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("注销账号", role: .destructive) {
+                Task {
+                    if await session.deleteAccount() {
+                        onClearLocalData()
+                        dismiss()
+                    }
+                }
+            }
+            Button("取消", role: .cancel) { }
+        }
+    }
+
+    private var accountCard: some View {
+        settingCard {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showAccountConfig.toggle()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Color(hex: 0xFAFAFA))
+                        .frame(width: 18, height: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(session.user?.email ?? "已登录")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color(hex: 0xFAFAFA))
+                        if !session.statusMessage.isEmpty {
+                            Text(session.statusMessage)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
+                        .rotationEffect(.degrees(showAccountConfig ? 90 : 0))
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 54)
+            }
+            .buttonStyle(.plain)
+
+            if showAccountConfig {
+                Rectangle()
+                    .fill(Color(hex: 0x262626).opacity(0.2))
+                    .frame(height: 1)
+                    .padding(.horizontal, 16)
+
+                VStack(spacing: 14) {
+                    if AppEnvironment.isDebug {
+                        settingsField(label: "BACKEND URL", text: $session.backendURL)
+                    }
+                    HStack(spacing: 10) {
+                        Button {
+                            Task {
+                                await session.logout()
+                                onClearLocalData()
+                                dismiss()
+                            }
+                        } label: {
+                            Text("退出登录")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Color(hex: 0xFAFAFA))
+                                .frame(maxWidth: .infinity, minHeight: 41)
+                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x262626).opacity(0.6)))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            showDeleteConfirm = true
+                        } label: {
+                            Text("注销账号")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(Color(hex: 0xFB2C36))
+                                .frame(maxWidth: .infinity, minHeight: 41)
+                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x0A0A0A)))
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x82181A).opacity(0.5), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(16)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
     private var selectedStockProvider: StockProviderOption {

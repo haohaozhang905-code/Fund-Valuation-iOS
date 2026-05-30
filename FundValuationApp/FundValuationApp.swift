@@ -13,7 +13,7 @@ struct FundValuationApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainView()
+            RootView()
                 .preferredColorScheme(preferredScheme)
         }
     }
