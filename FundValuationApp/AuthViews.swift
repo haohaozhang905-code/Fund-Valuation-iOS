@@ -30,7 +30,7 @@ struct AuthFlowView: View {
 
     var body: some View {
         ZStack {
-            Color(hex: 0x1C1C1E).ignoresSafeArea()
+            Color.appBackground.ignoresSafeArea()
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
                     header
@@ -44,6 +44,7 @@ struct AuthFlowView: View {
                 .padding(.top, 72)
                 .padding(.bottom, 28)
             }
+            .scrollDismissesKeyboard(.immediately)
         }
         .onAppear {
             backendURLDraft = session.backendURL
@@ -60,31 +61,34 @@ struct AuthFlowView: View {
                 .foregroundStyle(.white)
             Text(subtitle)
                 .font(.system(size: 14))
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.72))
+                .foregroundStyle(Color.secondaryText.opacity(0.72))
         }
     }
+
+    // MARK: - 表单卡片
 
     private var formCard: some View {
         VStack(spacing: 14) {
             field("邮箱", text: $email, keyboard: .emailAddress, field: .email)
+
             if mode != .forgot || resetRequested {
                 secureField(mode == .forgot ? "新密码" : "密码", text: $password, field: .password)
-            } else if mode == .forgot {
-                EmptyView()
+                // 注册模式下显示密码提示
+                if mode == .register {
+                    passwordHints
+                }
             }
+
             if mode == .register {
                 secureField("确认密码", text: $confirmPassword, field: .confirmPassword)
             }
+
             if mode == .forgot && resetRequested {
                 field("验证码", text: $resetCode, keyboard: .numberPad, field: .resetCode)
             }
 
-            if !session.statusMessage.isEmpty {
-                Text(session.statusMessage)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.72))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // 状态消息单独提取为子视图，隔离 ObservedObject 重渲染范围
+            StatusMessageView(message: session.statusMessage)
 
             Button {
                 Task { await submit() }
@@ -100,7 +104,7 @@ struct AuthFlowView: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, minHeight: 48)
-                .background(RoundedRectangle(cornerRadius: 14).fill(canSubmit ? Color(hex: 0x2B7FFF) : Color(hex: 0x2C2C2E)))
+                .background(RoundedRectangle(cornerRadius: 14).fill(canSubmit ? Color.accentBlue : Color.fieldBackground))
             }
             .buttonStyle(.plain)
             .disabled(!canSubmit || session.isWorking)
@@ -108,10 +112,50 @@ struct AuthFlowView: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 18)
-                .fill(Color(hex: 0x0A0A0A))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
+                .fill(Color.cardBackground)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.borderGray, lineWidth: 1))
         )
     }
+
+    // MARK: - 密码提示（仅注册模式）
+
+    @ViewBuilder
+    private var passwordHints: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            hintRow("至少 8 个字符", met: password.count >= 8)
+            hintRow("两次密码一致", met: confirmPassword.isEmpty ? false : password == confirmPassword)
+        }
+        .padding(.leading, 4)
+    }
+
+    private func hintRow(_ text: String, met: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: met ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 12))
+                .foregroundStyle(met ? Color.hintGreen : Color.secondaryText.opacity(0.45))
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(met ? Color.hintGreen : Color.secondaryText.opacity(0.45))
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+        .animation(.easeInOut(duration: 0.15), value: met)
+    }
+
+    // MARK: - 状态消息子视图（隔离 ObservedObject 重渲染）
+
+    private struct StatusMessageView: View {
+        let message: String
+        var body: some View {
+            if !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondaryText.opacity(0.72))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - 服务器配置卡片（仅 Debug）
 
     private var serverCard: some View {
         VStack(spacing: 0) {
@@ -127,33 +171,33 @@ struct AuthFlowView: View {
                     Text(session.backendURL)
                         .lineLimit(1)
                         .font(.system(size: 12))
-                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
+                        .foregroundStyle(Color.secondaryText.opacity(0.55))
                     Image(systemName: "chevron.right")
                         .rotationEffect(.degrees(showServer ? 90 : 0))
                 }
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color(hex: 0xFAFAFA).opacity(0.82))
+                .foregroundStyle(Color.foregroundWhite.opacity(0.82))
                 .padding(.horizontal, 16)
                 .frame(height: 50)
             }
             .buttonStyle(.plain)
 
             if showServer {
-                Divider().overlay(Color(hex: 0x262626).opacity(0.2))
+                Divider().overlay(Color.borderGray)
                 VStack(alignment: .leading, spacing: 8) {
                     field("Backend URL", text: $backendURLDraft, keyboard: .URL, field: .backendURL)
                     backendQuickActions
                     Text("模拟器用 `http://127.0.0.1:8787`。真机用 `http://Mac.local:8787` 或电脑局域网 IP。后端必须用 `0.0.0.0` 启动。")
                         .font(.system(size: 11))
-                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                        .foregroundStyle(Color.secondaryText.opacity(0.6))
                 }
                 .padding(16)
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 18)
-                .fill(Color(hex: 0x0A0A0A))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
+                .fill(Color.cardBackground)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.borderGray, lineWidth: 1))
         )
     }
 
@@ -168,8 +212,10 @@ struct AuthFlowView: View {
             }
         }
         .font(.system(size: 14, weight: .medium))
-        .foregroundStyle(Color(hex: 0x2B7FFF))
+        .foregroundStyle(Color.accentBlue)
     }
+
+    // MARK: - 计算属性
 
     private var subtitle: String {
         switch mode {
@@ -201,6 +247,8 @@ struct AuthFlowView: View {
             return hasEmail
         }
     }
+
+    // MARK: - 操作
 
     private func submit() async {
         syncBackendURL()
@@ -238,7 +286,7 @@ struct AuthFlowView: View {
     private var backendQuickActions: some View {
         HStack(spacing: 8) {
             backendQuickButton("模拟器", value: SessionViewModel.simulatorBackendURL)
-            backendQuickButton("真机", value: SessionViewModel.deviceBackendURL)
+            backendQuickButton("真机", value: "http://127.0.0.1:8787")
         }
     }
 
@@ -257,13 +305,15 @@ struct AuthFlowView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - 输入字段
+
     private func field(_ label: String, text: Binding<String>, keyboard: UIKeyboardType, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
                 .tracking(0.34)
                 .textCase(.uppercase)
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                .foregroundStyle(Color.secondaryText.opacity(0.6))
             TextField("", text: text)
                 .keyboardType(keyboard)
                 .textInputAutocapitalization(.never)
@@ -276,9 +326,7 @@ struct AuthFlowView: View {
                 .background(fieldBackground)
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            focusedField = field
-        }
+        .onTapGesture { focusedField = field }
     }
 
     private func secureField(_ label: String, text: Binding<String>, field: Field) -> some View {
@@ -287,7 +335,7 @@ struct AuthFlowView: View {
                 .font(.system(size: 11, weight: .medium))
                 .tracking(0.34)
                 .textCase(.uppercase)
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                .foregroundStyle(Color.secondaryText.opacity(0.6))
             SecureField("", text: text)
                 .font(.system(size: 15))
                 .foregroundStyle(.white)
@@ -297,23 +345,12 @@ struct AuthFlowView: View {
                 .background(fieldBackground)
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            focusedField = field
-        }
+        .onTapGesture { focusedField = field }
     }
 
     private var fieldBackground: some View {
         RoundedRectangle(cornerRadius: 14)
-            .fill(Color(hex: 0x2C2C2E))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
-    }
-}
-
-private extension Color {
-    init(hex: UInt32, alpha: Double = 1) {
-        let r = Double((hex >> 16) & 0xff) / 255
-        let g = Double((hex >> 8) & 0xff) / 255
-        let b = Double(hex & 0xff) / 255
-        self.init(.sRGB, red: r, green: g, blue: b, opacity: alpha)
+            .fill(Color.fieldBackground)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.borderGray, lineWidth: 1))
     }
 }

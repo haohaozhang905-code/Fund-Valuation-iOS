@@ -20,11 +20,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4) 拷贝应用代码
+# 4) 创建数据目录，确保 SQLite Volume 挂载点可写
+RUN mkdir -p /app/data && chmod 777 /app/data
+
+# 5) 拷贝应用代码
 COPY . .
 
-# 5) 暴露端口
+# 6) 暴露端口
 EXPOSE 8080
 
-# 6) 启动
+# 7) 启动
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
