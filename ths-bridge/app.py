@@ -708,6 +708,47 @@ def me(user: User = Depends(current_user)) -> UserOut:
     return UserOut(id=user.id, email=user.email_lower)
 
 
+@app.get("/debug/portfolio-raw")
+def debug_portfolio_raw(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """返回 portfolio 原始 JSON 用于调试日期格式"""
+    from fastapi.responses import JSONResponse
+    import json
+
+    funds = db.scalars(
+        select(FundPositionDB).where(FundPositionDB.user_id == user.id).order_by(FundPositionDB.created_at)
+    ).all()
+    stocks = db.scalars(
+        select(StockPositionDB).where(StockPositionDB.user_id == user.id).order_by(StockPositionDB.created_at)
+    ).all()
+
+    data = {
+        "funds": [
+            {
+                "id": f.id,
+                "fundCode": f.fund_code,
+                "fundName": f.fund_name,
+                "costPrice": f.cost_price,
+                "shares": f.shares,
+                "clientUpdatedAt": f.client_updated_at.isoformat() if f.client_updated_at else None,
+            }
+            for f in funds
+        ],
+        "stocks": [
+            {
+                "id": s.id,
+                "symbol": s.symbol,
+                "displayName": s.display_name,
+                "averageCost": s.average_cost,
+                "shares": s.shares,
+                "clientUpdatedAt": s.client_updated_at.isoformat() if s.client_updated_at else None,
+            }
+            for s in stocks
+        ],
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    return JSONResponse(content=data)
+
+
 @app.delete("/v1/account")
 def delete_account(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(delete(FundPositionDB).where(FundPositionDB.user_id == user.id))
