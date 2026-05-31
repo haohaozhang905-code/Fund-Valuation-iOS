@@ -439,7 +439,7 @@ final class StockViewModel: ObservableObject {
     private func rebuildSummary() {
         var next = StockPortfolioSummary()
         next.marketState = USMarketHours.marketState()
-        next.providerName = providerConfig.provider.capitalized
+        next.providerName = "THS Bridge"
         next.errorMessage = snapshots.contains(where: { $0.errorMessage != nil }) ? lastRefreshMessage : nil
         for snap in snapshots {
             next.totalCost += snap.totalCost
