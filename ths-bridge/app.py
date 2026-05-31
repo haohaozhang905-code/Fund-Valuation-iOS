@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -53,6 +54,18 @@ app = FastAPI(
     json_encoders={
         datetime: lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
     },
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://haohaozhang905-code.github.io",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
