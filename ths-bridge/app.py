@@ -2,8 +2,10 @@
 THS Bridge —— 基于 westock-data-clawhub 的美股行情 HTTP 桥接服务
 提供搜索、实时报价、日K 线接口供 iOS App 调用
 """
+import json
 import logging
 import os
+import re
 import threading
 import time
 import hashlib
@@ -62,6 +64,13 @@ app.add_middleware(
         "https://haohaozhang905-code.github.io",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "null",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -1097,6 +1106,101 @@ def stock_kline(symbol: str, count: int = 120,
         except Exception as e:
             logger.warning("kline: westock failed for %s: %s", ticker, e)
     raise HTTPException(status_code=502, detail=f"No kline data for {ticker}")
+
+
+# ====== 基金数据代理（Web 前端使用，浏览器无法直接请求东方财富 API）=====
+
+
+@app.get("/v1/funds/valuation/{code}")
+def fund_valuation_proxy(code: str) -> dict:
+    """代理天天基金实时估值 JSONP → JSON"""
+    url = f"https://fundgz.1234567.com.cn/js/{code}.js"
+    try:
+        resp = httpx.get(url, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("fund valuation failed for %s: %s", code, e)
+        raise HTTPException(status_code=502, detail=f"Valuation fetch failed: {e}")
+    match = re.search(r"jsonpgz\((.+)\)", resp.text, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=502, detail=f"Unexpected valuation format for {code}")
+    return json.loads(match.group(1))
+
+
+@app.get("/v1/funds/nav-trend/{code}")
+def fund_nav_trend_proxy(code: str) -> dict:
+    """代理东方财富 pingzhongdata 接口，提取历史净值趋势"""
+    url = f"https://fund.eastmoney.com/pingzhongdata/{code}.js"
+    try:
+        resp = httpx.get(url, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("nav-trend failed for %s: %s", code, e)
+        raise HTTPException(status_code=502, detail=f"Nav trend fetch failed: {e}")
+    text = resp.text
+    trend_match = re.search(r"var Data_netWorthTrend\s*=\s*(\[.*?\]);", text, re.DOTALL)
+    name_match = re.search(r'var fS_name\s*=\s*"(.*?)";', text)
+    if not trend_match:
+        raise HTTPException(status_code=502, detail=f"Net worth trend not found for {code}")
+    try:
+        trend = json.loads(trend_match.group(1))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Parse trend JSON failed: {e}")
+    return {
+        "name": name_match.group(1) if name_match else "",
+        "netWorthTrend": trend,
+    }
+
+
+@app.get("/v1/funds/nav-latest/{code}")
+def fund_nav_latest_proxy(code: str) -> dict:
+    """代理东方财富 F10 接口，获取最新净值数据"""
+    url = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=5"
+    try:
+        resp = httpx.get(url, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("nav-latest failed for %s: %s", code, e)
+        raise HTTPException(status_code=502, detail=f"Nav latest fetch failed: {e}")
+    text = resp.text
+    records_match = re.search(r"records:(\d+)", text)
+    records = int(records_match.group(1)) if records_match else 0
+    content_match = re.search(r'content:"(.*?)"', text, re.DOTALL)
+    rows: list[dict[str, str]] = []
+    if content_match:
+        raw = content_match.group(1)
+        raw = raw.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line or not line.startswith("<tr>"):
+                continue
+            cells = re.findall(r"<td>(.*?)</td>", line)
+            if len(cells) >= 5:
+                rows.append({
+                    "date": cells[1].strip(),
+                    "nav": cells[2].strip(),
+                    "accumNav": cells[3].strip(),
+                    "dailyReturn": cells[4].strip().replace("%", ""),
+                })
+    return {"records": records, "items": rows}
+
+
+@app.get("/v1/index/csi300")
+def csi300_index_proxy(datalen: int = 242) -> dict:
+    """代理新浪沪深 300 指数 K 线数据"""
+    limit = min(max(datalen, 10), 1023)
+    url = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
+        f"/CN_MarketData.getKLineData?symbol=sh000300&scale=240&ma=no&datalen={limit}"
+    )
+    try:
+        resp = httpx.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning("csi300 fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"CSI300 fetch failed: {e}")
+    return {"items": data if isinstance(data, list) else []}
 
 
 def _is_us_market_open() -> bool:
