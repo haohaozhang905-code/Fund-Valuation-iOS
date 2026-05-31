@@ -912,7 +912,7 @@ private struct StockEditorView: View {
 
     @ViewBuilder
     private var searchResultsSection: some View {
-        if isSearching || !searchResults.isEmpty {
+        if isSearching || !searchResults.isEmpty || canSaveManualSymbol {
             VStack(spacing: 0) {
                 if isSearching {
                     HStack(spacing: 8) {
@@ -926,6 +926,26 @@ private struct StockEditorView: View {
                     }
                     .padding(.horizontal, 16)
                     .frame(height: 44)
+                }
+
+                if canSaveManualSymbol {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(Color(hex: 0x51A2FF))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("手动添加 \(StockPosition.normalizeSymbol(symbol))")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Text("搜索源暂无匹配，保存后可继续追踪持仓")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 54)
                 }
 
                 ForEach(searchResults) { result in
@@ -1030,8 +1050,15 @@ private struct StockEditorView: View {
 
     private var isValid: Bool {
         StockPosition.isValidSymbol(symbol)
-            && hasSearched && !searchResults.isEmpty
+            && hasSearched && !isSearching
             && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
+    }
+
+    private var canSaveManualSymbol: Bool {
+        hasSearched
+            && !isSearching
+            && searchResults.isEmpty
+            && StockPosition.isValidSymbol(symbol)
     }
 
     private func scheduleSearch(for raw: String) {

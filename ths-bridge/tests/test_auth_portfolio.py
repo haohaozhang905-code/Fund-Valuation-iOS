@@ -162,3 +162,95 @@ def test_portfolio_owned_and_replaced_atomically() -> None:
     after_bad = c.get("/v1/portfolio", headers={"Authorization": f"Bearer {token_a}"})
     assert len(after_bad.json()["funds"]) == 1
     assert len(after_bad.json()["stocks"]) == 1
+
+
+def test_stock_search_falls_back_to_twelve_data(monkeypatch) -> None:
+    import app as app_module
+
+    def fail_search(_query: str) -> list[dict]:
+        raise RuntimeError("westock timeout")
+
+    monkeypatch.setattr(app_module.wc, "search", fail_search)
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: [{
+        "symbol": "SIVEF",
+        "name": "Sivers Semiconductors AB (publ)",
+        "displaySymbol": "SIVEF.OTC",
+        "market": "OTC",
+        "type": "Common Stock",
+        "isEquity": True,
+    }])
+
+    response = client().get("/v1/stocks/search", params={"q": "SIVEF"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "twelvedata"
+    assert body["items"][0]["symbol"] == "SIVEF"
+
+
+def test_stock_quote_falls_back_to_twelve_data(monkeypatch) -> None:
+    import app as app_module
+
+    def fail_resolve(_ticker: str) -> str:
+        raise RuntimeError("westock timeout")
+
+    monkeypatch.setattr(app_module, "resolve_us_code", fail_resolve)
+    monkeypatch.setattr(app_module, "twelve_quote", lambda _ticker: {
+        "symbol": "SIVEF",
+        "name": "Sivers Semiconductors AB (publ)",
+        "currency": "USD",
+        "regularPrice": 0.1234,
+        "previousClose": 0.12,
+        "change": 0.0034,
+        "changePercent": 2.8333,
+        "marketState": "closed",
+        "regularTimestamp": "2026-05-29",
+        "extendedPrice": None,
+        "extendedChange": None,
+        "extendedChangePercent": None,
+        "extendedTimestamp": None,
+        "provider": "twelvedata",
+        "providerLabel": "Twelve Data",
+        "isStale": False,
+        "fetchedAt": app_module.now_iso(),
+        "open": 0.12,
+        "high": 0.13,
+        "low": 0.12,
+        "volume": 1000,
+    })
+
+    response = client().get("/v1/stocks/quote", params={"symbol": "SIVEF"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "twelvedata"
+    assert body["regularPrice"] == 0.1234
+
+
+def test_stock_kline_falls_back_to_twelve_data(monkeypatch) -> None:
+    import app as app_module
+
+    def fail_resolve(_ticker: str) -> str:
+        raise RuntimeError("westock timeout")
+
+    monkeypatch.setattr(app_module, "resolve_us_code", fail_resolve)
+    monkeypatch.setattr(app_module, "twelve_kline", lambda _ticker, _count: {
+        "symbol": "SIVEF",
+        "code": "SIVEF.OTC",
+        "count": 1,
+        "items": [{
+            "date": "2026-05-29",
+            "open": 0.12,
+            "high": 0.13,
+            "low": 0.12,
+            "close": 0.1234,
+            "volume": 1000,
+            "changePercent": 0,
+        }],
+        "provider": "twelvedata",
+        "fetchedAt": app_module.now_iso(),
+    })
+
+    response = client().get("/v1/stocks/kline", params={"symbol": "SIVEF", "count": 120})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "twelvedata"
+    assert body["items"][0]["close"] == 0.1234

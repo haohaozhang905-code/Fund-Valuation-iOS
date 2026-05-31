@@ -5,6 +5,8 @@
 ## 运行
 
 ```bash
+cp .env.example .env
+# 编辑 .env，填入 TWELVE_DATA_API_KEY 后再启动
 ./run_local.sh
 ```
 
@@ -27,12 +29,28 @@ iOS 设置页选择：
 BRIDGE_ACCESS_TOKEN=
 THS_UPSTREAM_BASE_URL=
 THS_UPSTREAM_TOKEN=
+TWELVE_DATA_API_KEY=
 DATABASE_URL=sqlite:///./ths_bridge.db
 JWT_SECRET=change-me
 ACCESS_TOKEN_MINUTES=43200
 ```
 
 `THS_UPSTREAM_BASE_URL` 保持泛化命名。上游可以是同花顺 iFinD、thsdk、Westock，或另一个已经封装好行情能力的 HTTP 服务。Bridge 的职责是把上游响应适配成 iOS 需要的统一字段。
+
+`TWELVE_DATA_API_KEY` 用于 Westock 搜索/行情失败时的美股 OTC 兜底，例如 `SIVEF` 这类 OTC Markets 代码。
+
+获取 Twelve Data API Key：
+
+1. 打开 https://twelvedata.com/ 并注册/登录。
+2. 进入 Dashboard 或 API Keys 页面。
+3. 复制默认 API Key。
+4. 写入 `ths-bridge/.env`：
+
+```text
+TWELVE_DATA_API_KEY=你的key
+```
+
+生产部署时不要提交 `.env`，在 Zeabur/服务器环境变量里配置同名 `TWELVE_DATA_API_KEY`。
 
 账号与持仓同步：
 
