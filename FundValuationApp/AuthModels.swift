@@ -11,6 +11,13 @@ struct AuthResponse: Codable, Equatable {
     let user: UserAccount
 }
 
+struct PasswordResetResponse: Codable, Equatable {
+    let status: String
+    let userFound: String
+    let emailSent: String?
+    let emailError: String?
+}
+
 struct RemoteFundPosition: Codable, Equatable {
     let id: String
     let fundCode: String

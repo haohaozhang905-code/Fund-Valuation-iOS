@@ -1209,8 +1209,8 @@ private struct SettingsPageView: View {
             }
         }
         .swipeBackGesture(onBack: { dismiss() })
-        .confirmationDialog("注销账号会删除云端持仓并退出登录。", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("注销账号", role: .destructive) {
+        .confirmationDialog("此操作不可撤销！\n\n1. 删除云端所有持仓数据\n2. 清除本地所有缓存数据\n3. 退出当前登录", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("确认注销", role: .destructive) {
                 Task {
                     if await session.deleteAccount() {
                         onClearLocalData()

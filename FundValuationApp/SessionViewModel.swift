@@ -53,8 +53,18 @@ final class SessionViewModel: ObservableObject {
         statusMessage = "正在发送验证码..."
         defer { isWorking = false }
         do {
-            try await service.requestPasswordReset(email: email)
-            statusMessage = "如果邮箱已注册，验证码会发送到该邮箱。"
+            let response = try await service.requestPasswordReset(email: email)
+            if response.userFound != "true" {
+                statusMessage = "该邮箱未注册，请先注册。"
+                return false
+            }
+            if response.emailSent == "true" {
+                statusMessage = "验证码已发送到邮箱，请查收。"
+            } else if let error = response.emailError {
+                statusMessage = "邮件发送失败：\(error)"
+            } else {
+                statusMessage = "验证码已发送到邮箱，请查收。"
+            }
             return true
         } catch {
             statusMessage = message(for: error)

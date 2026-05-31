@@ -36,8 +36,8 @@ struct AuthService {
         try await send(path: "/v1/auth/login", method: "POST", body: ["email": email, "password": password], token: nil)
     }
 
-    func requestPasswordReset(email: String) async throws {
-        let _: EmptyResponse = try await send(path: "/v1/auth/password-reset/request", method: "POST", body: ["email": email], token: nil)
+    func requestPasswordReset(email: String) async throws -> PasswordResetResponse {
+        try await send(path: "/v1/auth/password-reset/request", method: "POST", body: ["email": email], token: nil)
     }
 
     func confirmPasswordReset(email: String, code: String, newPassword: String) async throws -> AuthResponse {
