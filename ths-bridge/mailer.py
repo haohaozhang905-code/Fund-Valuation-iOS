@@ -3,6 +3,13 @@ import smtplib
 from email.mime.text import MIMEText
 
 
+# 使用 uvicorn 的日志系统，确保 Zeabur 能捕获
+def _log(msg: str) -> None:
+    """通过 uvicorn 日志输出，确保 Zeabur 日志可见"""
+    import logging
+    logging.getLogger("uvicorn.access").warning("[MAILER] " + msg)
+
+
 class Mailer:
     def __init__(self) -> None:
         self.host = os.getenv("SMTP_HOST", "").strip()
@@ -13,15 +20,15 @@ class Mailer:
         self._enabled = bool(self.host and self.user and self.password)
 
         if self._enabled:
-            print(f"[MAILER] SMTP configured: host={self.host} port={self.port} user={self.user} from={self.from_addr}", flush=True)
+            _log(f"SMTP configured: host={self.host} port={self.port} user={self.user} from={self.from_addr}")
         else:
-            print(f"[MAILER] SMTP NOT configured — set SMTP_HOST/SMTP_USER/SMTP_PASS to enable", flush=True)
+            _log("SMTP NOT configured — set SMTP_HOST/SMTP_USER/SMTP_PASS to enable")
 
     def send_password_reset_code(self, email: str, code: str) -> None:
-        print(f"[MAILER] Sending password reset code to {email}: {code}", flush=True)
+        _log(f"Sending password reset code to {email}: {code}")
 
         if not self._enabled:
-            print(f"[MAILER] SKIPPED: SMTP not configured", flush=True)
+            _log("SKIPPED: SMTP not configured")
             return
 
         subject = "FinMate — 密码重置验证码"
@@ -38,26 +45,23 @@ class Mailer:
         msg["To"] = email
 
         try:
-            print(f"[MAILER] Connecting to SMTP {self.host}:{self.port}...", flush=True)
+            _log(f"Connecting to SMTP {self.host}:{self.port}...")
             with smtplib.SMTP(self.host, self.port, timeout=15) as server:
-                server.set_debuglevel(1)  # 打印 SMTP 协议通信细节
-                print(f"[MAILER] Starting TLS...", flush=True)
+                server.set_debuglevel(1)
                 server.starttls()
-                print(f"[MAILER] Logging in as {self.user}...", flush=True)
                 server.login(self.user, self.password)
-                print(f"[MAILER] Sending email...", flush=True)
                 server.send_message(msg)
-            print(f"[MAILER] SUCCESS: email sent to {email}", flush=True)
+            _log(f"SUCCESS: email sent to {email}")
         except smtplib.SMTPAuthenticationError as e:
-            print(f"[MAILER] SMTP AUTH FAILED: {e.smtp_code} {e.smtp_error}", flush=True)
+            _log(f"AUTH FAILED: code={e.smtp_code} error={e.smtp_error}")
         except smtplib.SMTPConnectError as e:
-            print(f"[MAILER] SMTP CONNECT FAILED: {e}", flush=True)
+            _log(f"CONNECT FAILED: {e}")
         except smtplib.SMTPServerDisconnected as e:
-            print(f"[MAILER] SMTP DISCONNECTED: {e}", flush=True)
+            _log(f"DISCONNECTED: {e}")
         except smtplib.SMTPException as e:
-            print(f"[MAILER] SMTP ERROR: {e}", flush=True)
+            _log(f"SMTP ERROR: {e}")
         except Exception as e:
-            print(f"[MAILER] UNEXPECTED ERROR: {e}", flush=True)
+            _log(f"UNEXPECTED ERROR: {e}")
 
 
 mailer = Mailer()
