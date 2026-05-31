@@ -133,29 +133,23 @@ struct StockPortfolioSummary: Equatable {
 }
 
 struct StockProviderConfig: Codable, Equatable {
-    var provider: String = "finnhub"
     var apiKey: String = ""
 
-    // Bridge-style providers use this as their base URL. Key-based providers keep it empty.
-    var endpoint: String = ""
-
     enum CodingKeys: String, CodingKey {
-        case provider
         case apiKey
-        case endpoint
     }
 
-    init(provider: String = "finnhub", apiKey: String = "", endpoint: String = "") {
-        self.provider = provider
+    init(apiKey: String = "") {
         self.apiKey = apiKey
-        self.endpoint = endpoint
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? "finnhub"
         apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
-        endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+    }
+
+    init(provider: String, apiKey: String = "", endpoint: String = "") {
+        self.apiKey = apiKey
     }
 }
 

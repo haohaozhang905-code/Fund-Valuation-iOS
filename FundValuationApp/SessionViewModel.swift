@@ -5,39 +5,21 @@ import Combine
 final class SessionViewModel: ObservableObject {
     @Published private(set) var user: UserAccount?
     @Published private(set) var accessToken: String?
-    @Published var backendURL: String {
-        didSet {
-            UserDefaults.standard.set(backendURL, forKey: Self.backendURLKey)
-        }
-    }
     @Published var statusMessage = ""
     @Published var isWorking = false
 
     private static let tokenAccount = "access_token"
     private static let emailKey = "auth_email"
     private static let userIDKey = "auth_user_id"
-    private static let backendURLKey = "backend_base_url"
 
-    // ════════════════════════════════════════
-    // 后端地址：Debug 可覆盖，Release 写死
-    // ════════════════════════════════════════
-    /// 本地开发地址
-    static let simulatorBackendURL = "http://127.0.0.1:8787"
-
-    static var defaultBackendURL: String {
-        #if DEBUG
-        simulatorBackendURL
-        #else
-        AppEnvironment.productionBackendURL
-        #endif
-    }
+    /// 后端地址固定使用生产地址
+    static var backendURL: String { AppEnvironment.productionBackendURL }
 
     var isAuthenticated: Bool {
         accessToken?.isEmpty == false
     }
 
     init() {
-        backendURL = Self.resolvedBackendURL()
         accessToken = nil
         if let email = UserDefaults.standard.string(forKey: Self.emailKey), !email.isEmpty {
             user = UserAccount(id: UserDefaults.standard.integer(forKey: Self.userIDKey), email: email)
@@ -84,18 +66,6 @@ final class SessionViewModel: ObservableObject {
         await authenticate { service in
             try await service.confirmPasswordReset(email: email, code: code, newPassword: newPassword)
         }
-    }
-
-    func useSimulatorBackendURL() {
-        #if DEBUG
-        backendURL = Self.simulatorBackendURL
-        #endif
-    }
-
-    func useDeviceBackendURL() {
-        #if DEBUG
-        backendURL = "http://127.0.0.1:8787"
-        #endif
     }
 
     func bootstrapPortfolio(fundViewModel: FundViewModel, stockViewModel: StockViewModel) async {
@@ -175,7 +145,7 @@ final class SessionViewModel: ObservableObject {
     }
 
     private var service: AuthService {
-        AuthService(baseURL: backendURL)
+        AuthService(baseURL: Self.backendURL)
     }
 
     private func authenticate(_ operation: (AuthService) async throws -> AuthResponse) async -> Bool {
@@ -253,10 +223,4 @@ final class SessionViewModel: ObservableObject {
         return trimmed.count > 120 ? String(trimmed.prefix(120)) + "..." : trimmed
     }
 
-    private static func resolvedBackendURL() -> String {
-        guard AppEnvironment.isDebug else { return AppEnvironment.productionBackendURL }
-        let stored = UserDefaults.standard.string(forKey: backendURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let stored, !stored.isEmpty else { return defaultBackendURL }
-        return stored
-    }
 }

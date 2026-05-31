@@ -1057,45 +1057,6 @@ private struct FundDetailPageView: View {
 }
 
 private struct SettingsPageView: View {
-    private struct StockProviderOption: Identifiable {
-        let id: String
-        let title: String
-        let subtitle: String
-        let requiresAPIKey: Bool
-        let requiresEndpoint: Bool
-    }
-
-    private let stockProviderOptions = [
-        StockProviderOption(
-            id: "thsbridge",
-            title: "THS Bridge",
-            subtitle: "通过自建 Bridge 接同花顺行情，适合作为后续主行情源。",
-            requiresAPIKey: false,
-            requiresEndpoint: true
-        ),
-        StockProviderOption(
-            id: "finnhub",
-            title: "Finnhub",
-            subtitle: "正式行情源，需要 API Key，适合第一版真实行情。",
-            requiresAPIKey: true,
-            requiresEndpoint: false
-        ),
-        StockProviderOption(
-            id: "alphavantage",
-            title: "Alpha Vantage",
-            subtitle: "需要 API Key，免费额度较低，适合低频刷新或兜底验证。",
-            requiresAPIKey: true,
-            requiresEndpoint: false
-        ),
-        StockProviderOption(
-            id: "mock",
-            title: "Mock 演示数据",
-            subtitle: "不需要 API Key，仅用于调试 UI，价格不是真实行情。",
-            requiresAPIKey: false,
-            requiresEndpoint: false
-        )
-    ]
-
     @ObservedObject var viewModel: FundViewModel
     @ObservedObject var stockViewModel: StockViewModel
     @ObservedObject var session: SessionViewModel
@@ -1104,17 +1065,12 @@ private struct SettingsPageView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showModelConfig = false
-    @State private var showStockProviderConfig = false
     @State private var showAccountConfig = false
     @State private var showDeleteConfirm = false
     @State private var editModel = ""
     @State private var editEndpoint = ""
     @State private var editApiKey = ""
     @State private var testStatus = ""
-    @State private var editStockProvider = "finnhub"
-    @State private var editStockApiKey = ""
-    @State private var stockTestStatus = ""
-    @State private var editStockEndpoint = ""
 
     var body: some View {
         ZStack {
@@ -1245,95 +1201,7 @@ private struct SettingsPageView: View {
                         sectionTitle("行情数据源")
                             .padding(.top, 12)
 
-                        settingCard {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.25)) {
-                                    showStockProviderConfig.toggle()
-                                    if showStockProviderConfig {
-                                        editStockProvider = stockViewModel.providerConfig.provider
-                                        editStockApiKey = stockViewModel.providerConfig.apiKey
-                                        editStockEndpoint = stockViewModel.providerConfig.endpoint
-                                        stockTestStatus = ""
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "chart.line.uptrend.xyaxis")
-                                        .font(.system(size: 18))
-                                        .foregroundStyle(Color(hex: 0xFAFAFA))
-                                        .frame(width: 18, height: 18)
-                                    Text("美股行情")
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(Color(hex: 0xFAFAFA))
-                                    Spacer()
-                                    Text(stockProviderTitle(for: stockViewModel.providerConfig.provider))
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
-                                        .rotationEffect(.degrees(showStockProviderConfig ? 90 : 0))
-                                }
-                                .padding(.horizontal, 16)
-                                .frame(height: 50.5)
-                            }
-                            .buttonStyle(.plain)
-
-                            if showStockProviderConfig {
-                                Rectangle()
-                                    .fill(Color(hex: 0x262626).opacity(0.2))
-                                    .frame(height: 1)
-                                    .padding(.horizontal, 16)
-
-                                VStack(spacing: 14) {
-                                    stockProviderPicker
-                                    if selectedStockProvider.requiresEndpoint {
-                                        settingsField(label: "BRIDGE URL", text: $editStockEndpoint)
-                                    }
-                                    if selectedStockProvider.requiresAPIKey {
-                                        settingsField(label: "API KEY", text: $editStockApiKey, isSecure: true)
-                                    } else if selectedStockProvider.requiresEndpoint {
-                                        settingsField(label: "ACCESS TOKEN", text: $editStockApiKey, isSecure: true)
-                                    }
-
-                                    HStack(spacing: 10) {
-                                        Button {
-                                            stockViewModel.saveProviderConfig(provider: editStockProvider, apiKey: editStockApiKey, endpoint: editStockEndpoint)
-                                        } label: {
-                                            Text("保存")
-                                                .font(.system(size: 14, weight: .medium))
-                                                .foregroundStyle(.white)
-                                                .frame(maxWidth: .infinity, minHeight: 41)
-                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x2B7FFF)))
-                                        }
-                                        .buttonStyle(.plain)
-
-                                        Button {
-                                            stockTestStatus = "测试中..."
-                                            Task {
-                                                let result = await stockViewModel.testProviderConfig(provider: editStockProvider, apiKey: editStockApiKey, endpoint: editStockEndpoint)
-                                                stockTestStatus = result
-                                            }
-                                        } label: {
-                                            Text(stockTestStatus.isEmpty ? "测试" : stockTestStatus)
-                                                .font(.system(size: 14, weight: .medium))
-                                                .foregroundStyle(Color(hex: 0xFAFAFA))
-                                                .frame(maxWidth: .infinity, minHeight: 41)
-                                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0x262626).opacity(0.6)))
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    .padding(.top, 4)
-
-                                    Text(selectedStockProvider.subtitle)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .padding(16)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                            }
-                        }
+                        stockProviderInfo
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 20)
@@ -1395,9 +1263,6 @@ private struct SettingsPageView: View {
                     .padding(.horizontal, 16)
 
                 VStack(spacing: 14) {
-                    if AppEnvironment.isDebug {
-                        settingsField(label: "BACKEND URL", text: $session.backendURL)
-                    }
                     HStack(spacing: 10) {
                         Button {
                             Task {
@@ -1433,85 +1298,23 @@ private struct SettingsPageView: View {
         }
     }
 
-    private var selectedStockProvider: StockProviderOption {
-        stockProviderOptions.first { $0.id == normalizedStockProvider(editStockProvider) } ?? stockProviderOptions[0]
-    }
-
-    private var stockProviderPicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("PROVIDER")
-                .font(.system(size: 11, weight: .medium))
-                .tracking(0.34)
-                .textCase(.uppercase)
-                .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.6))
-
-            Menu {
-                ForEach(stockProviderOptions) { option in
-                    Button {
-                        editStockProvider = option.id
-                        stockTestStatus = ""
-                        if !option.requiresAPIKey && !option.requiresEndpoint {
-                            editStockApiKey = ""
-                            editStockEndpoint = ""
-                    } else if !option.requiresEndpoint {
-                        editStockEndpoint = ""
-                    }
-                } label: {
-                    HStack {
-                        if option.id == selectedStockProvider.id {
-                            Image(systemName: "checkmark")
-                        }
-                        Text(option.title)
-                    }
-                }
+    private var stockProviderInfo: some View {
+        settingCard {
+            HStack(spacing: 12) {
+                Image(systemName: "chart.line.uptrend.xyaxis")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color(hex: 0xFAFAFA))
+                    .frame(width: 18, height: 18)
+                Text("美股行情")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color(hex: 0xFAFAFA))
+                Spacer()
+                Text("THS Bridge")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.5))
             }
-            } label: {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(selectedStockProvider.title)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Color(hex: 0xFAFAFA).opacity(0.75))
-                        Text(providerRequirementText(selectedStockProvider))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color(hex: 0xA1A1A1).opacity(0.55))
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 52)
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Color(hex: 0x2C2C2E))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex: 0x262626).opacity(0.2), lineWidth: 1))
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func stockProviderTitle(for provider: String) -> String {
-        stockProviderOptions.first { $0.id == normalizedStockProvider(provider) }?.title ?? provider.capitalized
-    }
-
-    private func providerRequirementText(_ option: StockProviderOption) -> String {
-        if option.requiresEndpoint {
-            return "需要 Bridge URL"
-        }
-        return option.requiresAPIKey ? "需要 API Key" : "无需 API Key"
-    }
-
-    private func normalizedStockProvider(_ provider: String) -> String {
-        switch provider.lowercased() {
-        case "alpha_vantage", "alpha-vantage", "alpha vantage":
-            return "alphavantage"
-        case "ths_bridge", "ths-bridge", "ths bridge", "ths":
-            return "thsbridge"
-        default:
-            return provider.lowercased()
+            .padding(.horizontal, 16)
+            .frame(height: 50.5)
         }
     }
 
@@ -2373,14 +2176,5 @@ private extension View {
                         }
                 )
         }
-    }
-}
-
-private extension Color {
-    init(hex: UInt32, alpha: Double = 1) {
-        let r = Double((hex >> 16) & 0xFF) / 255.0
-        let g = Double((hex >> 8) & 0xFF) / 255.0
-        let b = Double(hex & 0xFF) / 255.0
-        self.init(.sRGB, red: r, green: g, blue: b, opacity: alpha)
     }
 }

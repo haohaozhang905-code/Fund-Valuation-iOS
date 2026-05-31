@@ -16,6 +16,11 @@ enum AppEnvironment {
     static var productionBackendURL: String {
         "https://thsbridge.zeabur.app"
     }
+
+    /// 美股行情 Bridge 地址，与后端同一服务
+    static var thsBridgeURL: String {
+        productionBackendURL
+    }
 }
 
 // MARK: - 共享颜色工具，全局统一，避免重复计算

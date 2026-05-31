@@ -11,13 +11,11 @@ struct AuthFlowView: View {
     @ObservedObject var session: SessionViewModel
 
     @State private var mode: Mode = .login
-    @State private var backendURLDraft = ""
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var resetCode = ""
     @State private var resetRequested = false
-    @State private var showServer = false
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -25,7 +23,6 @@ struct AuthFlowView: View {
         case password
         case confirmPassword
         case resetCode
-        case backendURL
     }
 
     var body: some View {
@@ -35,9 +32,6 @@ struct AuthFlowView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     header
                     formCard
-                    if AppEnvironment.isDebug {
-                        serverCard
-                    }
                     footerActions
                 }
                 .padding(.horizontal, 22)
@@ -47,7 +41,6 @@ struct AuthFlowView: View {
             .scrollDismissesKeyboard(.immediately)
         }
         .onAppear {
-            backendURLDraft = session.backendURL
             if focusedField == nil {
                 focusedField = .email
             }
@@ -73,7 +66,6 @@ struct AuthFlowView: View {
 
             if mode != .forgot || resetRequested {
                 secureField(mode == .forgot ? "新密码" : "密码", text: $password, field: .password)
-                // 注册模式下显示密码提示
                 if mode == .register {
                     passwordHints
                 }
@@ -87,7 +79,6 @@ struct AuthFlowView: View {
                 field("验证码", text: $resetCode, keyboard: .numberPad, field: .resetCode)
             }
 
-            // 状态消息单独提取为子视图，隔离 ObservedObject 重渲染范围
             StatusMessageView(message: session.statusMessage)
 
             Button {
@@ -117,7 +108,7 @@ struct AuthFlowView: View {
         )
     }
 
-    // MARK: - 密码提示（仅注册模式）
+    // MARK: - 密码提示
 
     @ViewBuilder
     private var passwordHints: some View {
@@ -137,11 +128,8 @@ struct AuthFlowView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(met ? Color.hintGreen : Color.secondaryText.opacity(0.45))
         }
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
         .animation(.easeInOut(duration: 0.15), value: met)
     }
-
-    // MARK: - 状态消息子视图（隔离 ObservedObject 重渲染）
 
     private struct StatusMessageView: View {
         let message: String
@@ -153,52 +141,6 @@ struct AuthFlowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-
-    // MARK: - 服务器配置卡片（仅 Debug）
-
-    private var serverCard: some View {
-        VStack(spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showServer.toggle()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "server.rack")
-                    Text("账号服务")
-                    Spacer()
-                    Text(session.backendURL)
-                        .lineLimit(1)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.secondaryText.opacity(0.55))
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(showServer ? 90 : 0))
-                }
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.foregroundWhite.opacity(0.82))
-                .padding(.horizontal, 16)
-                .frame(height: 50)
-            }
-            .buttonStyle(.plain)
-
-            if showServer {
-                Divider().overlay(Color.borderGray)
-                VStack(alignment: .leading, spacing: 8) {
-                    field("Backend URL", text: $backendURLDraft, keyboard: .URL, field: .backendURL)
-                    backendQuickActions
-                    Text("模拟器用 `http://127.0.0.1:8787`。真机用 `http://Mac.local:8787` 或电脑局域网 IP。后端必须用 `0.0.0.0` 启动。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.secondaryText.opacity(0.6))
-                }
-                .padding(16)
-            }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(Color.cardBackground)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.borderGray, lineWidth: 1))
-        )
     }
 
     private var footerActions: some View {
@@ -251,7 +193,6 @@ struct AuthFlowView: View {
     // MARK: - 操作
 
     private func submit() async {
-        syncBackendURL()
         switch mode {
         case .login:
             _ = await session.login(email: email, password: password)
@@ -274,35 +215,6 @@ struct AuthFlowView: View {
         resetCode = ""
         resetRequested = false
         session.statusMessage = ""
-    }
-
-    private func syncBackendURL() {
-        let trimmed = backendURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != session.backendURL {
-            session.backendURL = trimmed
-        }
-    }
-
-    private var backendQuickActions: some View {
-        HStack(spacing: 8) {
-            backendQuickButton("模拟器", value: SessionViewModel.simulatorBackendURL)
-            backendQuickButton("真机", value: "http://127.0.0.1:8787")
-        }
-    }
-
-    private func backendQuickButton(_ title: String, value: String) -> some View {
-        Button {
-            backendURLDraft = value
-            session.backendURL = value
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color(hex: 0xDBEAFE))
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: 0x1C398E).opacity(0.45)))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - 输入字段

@@ -315,29 +315,17 @@ final class StockViewModel: ObservableObject {
         persistSortState()
     }
 
-    func saveProviderConfig(provider: String, apiKey: String, endpoint: String = "") {
-        providerConfig.provider = provider
-        providerConfig.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        providerConfig.endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+    func saveProviderAccessToken(_ token: String) {
+        providerConfig.apiKey = token.trimmingCharacters(in: .whitespacesAndNewlines)
         persistProviderConfig()
-        lastRefreshMessage = "行情配置已保存"
+        lastRefreshMessage = "配置已保存"
     }
 
     func testProviderConfig(provider: String, apiKey: String, endpoint: String = "") async -> String {
-        let testProvider: StockQuoteProviding
-        switch normalizedProvider(provider) {
-        case "mock":
-            testProvider = MockStockQuoteProvider()
-        case "alphavantage":
-            testProvider = AlphaVantageStockQuoteProvider(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
-        case "thsbridge":
-            testProvider = THSBridgeStockQuoteProvider(
-                baseURL: endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
-                accessToken: apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-        default:
-            testProvider = FinnhubStockQuoteProvider(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+        let testProvider = THSBridgeStockQuoteProvider(
+            baseURL: AppEnvironment.thsBridgeURL,
+            accessToken: apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         do {
             _ = try await testProvider.fetchQuote(symbol: positions.first?.symbol ?? "NVDA")
             return "测试成功"
@@ -360,16 +348,10 @@ final class StockViewModel: ObservableObject {
     }
 
     private func makeProvider() -> StockQuoteProviding {
-        switch normalizedProvider(providerConfig.provider) {
-        case "mock":
-            return MockStockQuoteProvider()
-        case "alphavantage":
-            return AlphaVantageStockQuoteProvider(apiKey: providerConfig.apiKey)
-        case "thsbridge":
-            return THSBridgeStockQuoteProvider(baseURL: providerConfig.endpoint, accessToken: providerConfig.apiKey)
-        default:
-            return FinnhubStockQuoteProvider(apiKey: providerConfig.apiKey)
-        }
+        THSBridgeStockQuoteProvider(
+            baseURL: providerConfig.endpoint.isEmpty ? AppEnvironment.thsBridgeURL : providerConfig.endpoint,
+            accessToken: providerConfig.apiKey
+        )
     }
 
     private func buildSnapshot(position: StockPosition, quote: StockQuote, isStale: Bool, errorMessage: String?) -> StockSnapshot {
@@ -449,9 +431,7 @@ final class StockViewModel: ObservableObject {
             if let quote = quoteCache[position.symbol] {
                 return buildSnapshot(position: position, quote: quote, isStale: true, errorMessage: nil)
             }
-            let provider = normalizedProvider(providerConfig.provider)
-            let isReady = provider == "mock" || providerConfig.hasRequiredCredential
-            return emptySnapshot(position: position, message: isReady ? "等待刷新" : "未配置行情数据源")
+            return emptySnapshot(position: position, message: "等待刷新")
         }
         rebuildSummary()
     }
@@ -489,14 +469,7 @@ final class StockViewModel: ObservableObject {
     }
 
     private func normalizedProvider(_ provider: String) -> String {
-        switch provider.lowercased() {
-        case "alpha_vantage", "alpha-vantage", "alpha vantage":
-            return "alphavantage"
-        case "ths_bridge", "ths-bridge", "ths bridge", "ths":
-            return "thsbridge"
-        default:
-            return provider.lowercased()
-        }
+        "thsbridge"
     }
 
     private func loadPositions() {
@@ -577,14 +550,5 @@ private extension String {
 }
 
 private extension StockProviderConfig {
-    var hasRequiredCredential: Bool {
-        switch provider.lowercased() {
-        case "mock":
-            return true
-        case "thsbridge", "ths_bridge", "ths-bridge", "ths bridge", "ths":
-            return !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        default:
-            return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-    }
+    var hasRequiredCredential: Bool { true }
 }
