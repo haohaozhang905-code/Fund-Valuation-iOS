@@ -1,9 +1,6 @@
-import logging
 import os
 import smtplib
 from email.mime.text import MIMEText
-
-logger = logging.getLogger("ths-bridge.mailer")
 
 
 class Mailer:
@@ -16,23 +13,15 @@ class Mailer:
         self._enabled = bool(self.host and self.user and self.password)
 
         if self._enabled:
-            logger.info(
-                "SMTP mailer enabled: host=%s port=%d user=%s from=%s",
-                self.host, self.port, self.user, self.from_addr,
-            )
+            print(f"[MAILER] SMTP configured: host={self.host} port={self.port} user={self.user} from={self.from_addr}", flush=True)
         else:
-            logger.warning(
-                "SMTP not configured — set SMTP_HOST/SMTP_USER/SMTP_PASS to enable email sending. "
-                "Password reset codes will only appear in server logs."
-            )
+            print(f"[MAILER] SMTP NOT configured — set SMTP_HOST/SMTP_USER/SMTP_PASS to enable", flush=True)
 
     def send_password_reset_code(self, email: str, code: str) -> None:
-        # 始终在日志中打印验证码，方便本地调试
-        print(f"[MAILER] Password reset code for {email}: {code}", flush=True)
-        logger.warning("Password reset code for %s: %s", email, code)
+        print(f"[MAILER] Sending password reset code to {email}: {code}", flush=True)
 
         if not self._enabled:
-            logger.warning("SMTP not configured, email NOT sent to %s", email)
+            print(f"[MAILER] SKIPPED: SMTP not configured", flush=True)
             return
 
         subject = "FinMate — 密码重置验证码"
@@ -42,22 +31,33 @@ class Mailer:
             f"该验证码 10 分钟内有效。如非本人操作，请忽略此邮件。\n\n"
             f"—— FinMate 团队"
         )
-        self._send(email, subject, body)
 
-    def _send(self, to: str, subject: str, body: str) -> None:
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = subject
         msg["From"] = self.from_addr
-        msg["To"] = to
+        msg["To"] = email
 
         try:
+            print(f"[MAILER] Connecting to SMTP {self.host}:{self.port}...", flush=True)
             with smtplib.SMTP(self.host, self.port, timeout=15) as server:
+                server.set_debuglevel(1)  # 打印 SMTP 协议通信细节
+                print(f"[MAILER] Starting TLS...", flush=True)
                 server.starttls()
+                print(f"[MAILER] Logging in as {self.user}...", flush=True)
                 server.login(self.user, self.password)
+                print(f"[MAILER] Sending email...", flush=True)
                 server.send_message(msg)
-            logger.info("Password reset email sent to %s", to)
+            print(f"[MAILER] SUCCESS: email sent to {email}", flush=True)
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"[MAILER] SMTP AUTH FAILED: {e.smtp_code} {e.smtp_error}", flush=True)
+        except smtplib.SMTPConnectError as e:
+            print(f"[MAILER] SMTP CONNECT FAILED: {e}", flush=True)
+        except smtplib.SMTPServerDisconnected as e:
+            print(f"[MAILER] SMTP DISCONNECTED: {e}", flush=True)
+        except smtplib.SMTPException as e:
+            print(f"[MAILER] SMTP ERROR: {e}", flush=True)
         except Exception as e:
-            logger.error("Failed to send email to %s: %s", to, e)
+            print(f"[MAILER] UNEXPECTED ERROR: {e}", flush=True)
 
 
 mailer = Mailer()
