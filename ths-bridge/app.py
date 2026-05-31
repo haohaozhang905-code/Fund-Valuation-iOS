@@ -410,6 +410,30 @@ def twelve_symbol_search(query: str) -> list[dict[str, Any]]:
     return items
 
 
+def exact_symbol_probe(symbol: str, market: str) -> tuple[list[dict[str, Any]], str]:
+    normalized = symbol.upper().strip()
+    if not normalized or len(normalized) > 15:
+        return [], "none"
+
+    quote = yahoo_quote(normalized)
+    provider = "yahoo"
+    if quote is None:
+        quote = twelve_quote(normalized)
+        provider = "twelvedata"
+    if quote is None:
+        return [], "none"
+
+    name = str(quote.get("name") or normalized).strip()
+    return [{
+        "symbol": normalized,
+        "name": name,
+        "displaySymbol": normalized,
+        "market": market,
+        "type": "Common Stock",
+        "isEquity": True,
+    }], provider
+
+
 def twelve_quote(ticker: str) -> dict[str, Any] | None:
     symbol = ticker.upper().strip()
     params = {"symbol": symbol}
@@ -787,6 +811,10 @@ def search_stocks(q: str, market: str = "US",
     items = twelve_symbol_search(query)
     if items:
         return set_cached_search(query, market, {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()})
+
+    items, probe_provider = exact_symbol_probe(query, market)
+    if items:
+        return set_cached_search(query, market, {"items": items, "provider": probe_provider, "fetchedAt": now_iso()})
 
     if not WESTOCK_ENABLED:
         return set_cached_search(query, market, {"items": [], "provider": "none", "fetchedAt": now_iso()})

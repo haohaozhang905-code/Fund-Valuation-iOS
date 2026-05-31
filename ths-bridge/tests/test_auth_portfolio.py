@@ -223,6 +223,47 @@ def test_stock_search_uses_twelve_data_when_yahoo_misses(monkeypatch) -> None:
     assert response.json()["provider"] == "twelvedata"
 
 
+def test_stock_search_probes_exact_symbol_when_indexes_miss(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._search_cache_lock:
+        app_module._search_cache.clear()
+
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", lambda _query: [])
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: [])
+    monkeypatch.setattr(app_module, "twelve_quote", lambda _query: (_ for _ in ()).throw(AssertionError("twelve quote should not be called")))
+    monkeypatch.setattr(app_module, "yahoo_quote", lambda _query: {
+        "symbol": "SNXX",
+        "name": "SNXX",
+        "currency": "USD",
+        "regularPrice": 25.0,
+        "previousClose": 24.5,
+        "change": 0.5,
+        "changePercent": 2.0408,
+        "marketState": "closed",
+        "regularTimestamp": "2026-05-29",
+        "extendedPrice": None,
+        "extendedChange": None,
+        "extendedChangePercent": None,
+        "extendedTimestamp": None,
+        "provider": "yahoo",
+        "providerLabel": "Yahoo Finance",
+        "isStale": False,
+        "fetchedAt": app_module.now_iso(),
+        "open": 24.6,
+        "high": 25.2,
+        "low": 24.4,
+        "volume": 1000,
+    })
+
+    response = client().get("/v1/stocks/search", params={"q": "SNXX"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "yahoo"
+    assert body["items"][0]["symbol"] == "SNXX"
+
+
 def test_short_stock_search_does_not_call_upstream(monkeypatch) -> None:
     import app as app_module
 
