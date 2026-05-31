@@ -4,7 +4,9 @@ THS Bridge —— 基于 westock-data-clawhub 的美股行情 HTTP 桥接服务
 """
 import logging
 import os
+import threading
 import time
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -19,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import westock_client as wc
 import database
 from auth_service import (
+    ACCESS_TOKEN_MINUTES,
     create_access_token,
     current_user,
     generate_reset_code,
@@ -49,11 +52,17 @@ logger = logging.getLogger("ths-bridge")
 app = FastAPI(title="THS Bridge", version="0.3.0")
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+SEARCH_CACHE_TTL_SECONDS = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "300"))
+SEARCH_MIN_QUERY_LENGTH = int(os.getenv("SEARCH_MIN_QUERY_LENGTH", "2"))
+_search_cache_lock = threading.Lock()
+_search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    for warning in deployment_warnings():
+        logger.warning("deployment config: %s", warning)
 
 
 def auth_response(user: User) -> AuthResponse:
@@ -79,6 +88,48 @@ def require_access_token(authorization: str | None) -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def stable_fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def jwt_secret_configured() -> bool:
+    return bool(os.getenv("JWT_SECRET", "").strip()) and os.getenv("JWT_SECRET") != "dev-change-me"
+
+
+def deployment_warnings() -> list[str]:
+    warnings: list[str] = []
+    if not jwt_secret_configured():
+        warnings.append("JWT_SECRET is not explicitly configured; token validity may be unsafe for production.")
+    if database.DATABASE_URL.startswith("sqlite") and database.DB_FILE_PATH and not os.path.isabs(database.DB_FILE_PATH):
+        warnings.append("DATABASE_URL uses a relative SQLite file; container redeploys may lose account data without a persistent volume.")
+    return warnings
+
+
+def search_cache_key(q: str, market: str) -> str:
+    return f"{market.upper().strip()}:{q.upper().strip()}"
+
+
+def get_cached_search(q: str, market: str) -> dict[str, Any] | None:
+    key = search_cache_key(q, market)
+    now = time.monotonic()
+    with _search_cache_lock:
+        entry = _search_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at <= now:
+            _search_cache.pop(key, None)
+            return None
+        return payload
+
+
+def set_cached_search(q: str, market: str, payload: dict[str, Any]) -> dict[str, Any]:
+    key = search_cache_key(q, market)
+    with _search_cache_lock:
+        _search_cache[key] = (time.monotonic() + SEARCH_CACHE_TTL_SECONDS, payload)
+    return payload
 
 
 def parse_float(value: Any, default: float = 0.0) -> float:
@@ -278,16 +329,27 @@ def resolve_us_code(ticker: str) -> str:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, Any]:
     db_file = database.DB_FILE_PATH
     db_exists = os.path.isfile(db_file) if db_file else False
+    db_url = database.DATABASE_URL
+    db_kind = db_url.split(":", 1)[0]
+    jwt_secret = os.getenv("JWT_SECRET", "dev-change-me")
     return {
         "status": "ok",
         "fetchedAt": now_iso(),
         "database": {
+            "kind": db_kind,
             "path": db_file or "not_sqlite",
             "exists": db_exists,
+            "isRelativeSqlitePath": bool(db_file and not os.path.isabs(db_file)),
         },
+        "auth": {
+            "jwtSecretConfigured": jwt_secret_configured(),
+            "jwtSecretFingerprint": stable_fingerprint(jwt_secret),
+            "accessTokenMinutes": ACCESS_TOKEN_MINUTES,
+        },
+        "warnings": deployment_warnings(),
     }
 
 
@@ -316,7 +378,12 @@ def register(payload: AuthRequest, db: Session = Depends(get_db)) -> AuthRespons
 def login(payload: AuthRequest, db: Session = Depends(get_db)) -> AuthResponse:
     email = normalize_email(str(payload.email))
     user = db.scalar(select(User).where(User.email_lower == email, User.deleted_at.is_(None)))
-    if user is None or not verify_password(payload.password, user.password_hash):
+    email_id = stable_fingerprint(email)
+    if user is None:
+        logger.warning("login failed: user not found email_id=%s", email_id)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not verify_password(payload.password, user.password_hash):
+        logger.warning("login failed: password mismatch user_id=%s email_id=%s", user.id, email_id)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     return auth_response(user)
 
@@ -489,16 +556,24 @@ def search_stocks(q: str, market: str = "US",
                   authorization: str | None = Header(default=None)) -> dict:
     logger.info("GET /v1/stocks/search?q=%s&market=%s", q, market)
     require_access_token(authorization)
-    if not q.strip():
+    query = q.strip().upper()
+    if not query:
         logger.warning("search: empty query")
         return {"items": [], "provider": "westock", "fetchedAt": now_iso()}
-    logger.info("search: calling wc.search(%s)", q)
+    if len(query) < SEARCH_MIN_QUERY_LENGTH:
+        return {"items": [], "provider": "cache", "fetchedAt": now_iso()}
+    cached = get_cached_search(query, market)
+    if cached is not None:
+        logger.info("search: cache hit for %s", query)
+        return cached
+
+    logger.info("search: calling wc.search(%s)", query)
     try:
-        results = wc.search(q.strip())
-        logger.info("search: got %d results for %s", len(results), q)
+        results = wc.search(query)
+        logger.info("search: got %d results for %s", len(results), query)
         westock_available = True
     except Exception as e:
-        logger.warning("search: westock failed for %s: %s", q, e)
+        logger.warning("search: westock failed for %s: %s", query, e)
         results = []
         westock_available = False
     items = []
@@ -524,30 +599,15 @@ def search_stocks(q: str, market: str = "US",
             "isEquity": is_equity,
         })
     if items:
-        return {"items": items, "provider": "westock", "fetchedAt": now_iso()}
-    items = twelve_symbol_search(q)
+        return set_cached_search(query, market, {"items": items, "provider": "westock", "fetchedAt": now_iso()})
+    items = twelve_symbol_search(query)
     if items:
-        return {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()}
-    # 搜索不到时，尝试直接查询该 ticker 的 K 线来验证
-    if westock_available:
-        try:
-            code = resolve_us_code(q)
-            kdata = wc.kline(code)
-            if kdata:
-                symbol = code.split(".")[0]
-                if symbol.startswith("us"):
-                    symbol = symbol[2:]
-                items.append({
-                    "symbol": symbol,
-                    "name": symbol,
-                    "displaySymbol": code,
-                    "market": market,
-                    "type": "GP",
-                    "isEquity": True,
-                })
-        except Exception:
-            pass
-    return {"items": items, "provider": "westock", "fetchedAt": now_iso()}
+        return set_cached_search(query, market, {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()})
+
+    # Do not validate misses with kline here. Search runs while the user types,
+    # so fallback quote/kline probes belong to explicit quote/detail requests.
+    provider = "westock" if westock_available else "none"
+    return set_cached_search(query, market, {"items": [], "provider": provider, "fetchedAt": now_iso()})
 
 
 # ====== 实时报价 ======

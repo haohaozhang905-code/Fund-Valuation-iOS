@@ -30,6 +30,11 @@ BRIDGE_ACCESS_TOKEN=
 THS_UPSTREAM_BASE_URL=
 THS_UPSTREAM_TOKEN=
 TWELVE_DATA_API_KEY=
+WESTOCK_MAX_CONCURRENCY=2
+WESTOCK_SEARCH_TIMEOUT_SECONDS=15
+WESTOCK_COMMAND_TIMEOUT_SECONDS=30
+SEARCH_CACHE_TTL_SECONDS=300
+SEARCH_MIN_QUERY_LENGTH=2
 DATABASE_URL=sqlite:///./ths_bridge.db
 JWT_SECRET=change-me
 ACCESS_TOKEN_MINUTES=43200
@@ -38,6 +43,13 @@ ACCESS_TOKEN_MINUTES=43200
 `THS_UPSTREAM_BASE_URL` 保持泛化命名。上游可以是同花顺 iFinD、thsdk、Westock，或另一个已经封装好行情能力的 HTTP 服务。Bridge 的职责是把上游响应适配成 iOS 需要的统一字段。
 
 `TWELVE_DATA_API_KEY` 用于 Westock 搜索/行情失败时的美股 OTC 兜底，例如 `SIVEF` 这类 OTC Markets 代码。
+
+搜索性能保护：
+
+- `SEARCH_MIN_QUERY_LENGTH=2`：少于 2 个字符不触发后端搜索。
+- `SEARCH_CACHE_TTL_SECONDS=300`：搜索结果缓存 5 分钟，重复输入不会重复打上游。
+- `WESTOCK_MAX_CONCURRENCY=2`：限制 Westock Node 子进程并发，避免搜索流量打满 CPU/内存。
+- `WESTOCK_SEARCH_TIMEOUT_SECONDS=15`：搜索子进程 15 秒超时，失败后可走 Twelve Data 兜底。
 
 获取 Twelve Data API Key：
 
@@ -52,11 +64,34 @@ TWELVE_DATA_API_KEY=你的key
 
 生产部署时不要提交 `.env`，在 Zeabur/服务器环境变量里配置同名 `TWELVE_DATA_API_KEY`。
 
+Zeabur 生产环境至少应配置：
+
+```text
+DATABASE_URL=sqlite:////app/data/ths_bridge.db
+JWT_SECRET=<固定不变的强随机字符串>
+TWELVE_DATA_API_KEY=<Twelve Data API Key>
+WESTOCK_MAX_CONCURRENCY=2
+WESTOCK_SEARCH_TIMEOUT_SECONDS=15
+SEARCH_CACHE_TTL_SECONDS=300
+SEARCH_MIN_QUERY_LENGTH=2
+```
+
+注意 SQLite 绝对路径格式有 4 个斜杠：`sqlite:////app/data/ths_bridge.db`。如果写成 `sqlite:///app/data/ths_bridge.db`，SQLAlchemy 通常也会解析为 `/app/data/ths_bridge.db`，但生产配置建议使用标准绝对路径写法。
+
 账号与持仓同步：
 
 - 本地开发默认使用 `sqlite:///./ths_bridge.db`。
-- 生产建议使用 PostgreSQL，并设置强随机 `JWT_SECRET`。
+- 生产必须使用持久化数据库，推荐 PostgreSQL；如果继续用 SQLite，必须把 `ths_bridge.db` 放在持久卷中，并把 `DATABASE_URL` 指向该持久路径。
+- 生产必须设置固定强随机 `JWT_SECRET`。如果部署后 `JWT_SECRET` 改变，旧登录 token 会全部失效，App 会回到登录态。
 - 邮箱验证码第一版会写入服务日志；接真实邮件服务时替换 `mailer.py`。
+
+部署后先检查：
+
+```http
+GET /health
+```
+
+确认 `auth.jwtSecretConfigured=true`，且每次部署后的 `auth.jwtSecretFingerprint` 不变；确认 `database.exists=true`，并且生产环境不要使用容器内相对 SQLite 路径。否则可能出现旧 token 失效、原账号查不到、只能重新注册的现象。
 
 ## App-facing API
 

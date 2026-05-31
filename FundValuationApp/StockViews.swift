@@ -1064,7 +1064,7 @@ private struct StockEditorView: View {
     private func scheduleSearch(for raw: String) {
         searchTask?.cancel()
         let query = StockPosition.normalizeSymbol(raw)
-        guard query.count >= 1 else {
+        guard query.count >= 2 else {
             searchResults = []
             isSearching = false
             hasSearched = false
@@ -1072,7 +1072,7 @@ private struct StockEditorView: View {
         }
         hasSearched = false
         searchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 80_000_000)
+            try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
             isSearching = true
             let results = await viewModel.searchSymbols(query: query)

@@ -5,11 +5,16 @@ import subprocess
 import json
 import os
 import re
+import threading
 from typing import Optional
 
 NPX = None  # lazy init
 PACKAGE = "westock-data-clawhub@1.0.4"
 ENV = None  # lazy init
+MAX_CONCURRENCY = int(os.getenv("WESTOCK_MAX_CONCURRENCY", "2"))
+SEARCH_TIMEOUT_SECONDS = int(os.getenv("WESTOCK_SEARCH_TIMEOUT_SECONDS", "15"))
+COMMAND_TIMEOUT_SECONDS = int(os.getenv("WESTOCK_COMMAND_TIMEOUT_SECONDS", "30"))
+_RUN_SEMAPHORE = threading.BoundedSemaphore(max(1, MAX_CONCURRENCY))
 
 
 def _init_npx():
@@ -71,10 +76,11 @@ def _parse_md_table(output: str) -> list[dict]:
     return rows
 
 
-def _run(cmd: str) -> list[dict]:
+def _run(cmd: str, timeout: int = COMMAND_TIMEOUT_SECONDS) -> list[dict]:
     """执行 westockdata 命令并返回解析结果"""
     full_cmd = [NPX, "-y", PACKAGE] + cmd.split()
-    r = subprocess.run(full_cmd, capture_output=True, text=True, timeout=30, env=ENV)
+    with _RUN_SEMAPHORE:
+        r = subprocess.run(full_cmd, capture_output=True, text=True, timeout=timeout, env=ENV)
     if r.returncode != 0:
         raise RuntimeError(f"CLI error: {r.stderr}")
     return _parse_md_table(r.stdout)
@@ -84,7 +90,7 @@ def _run(cmd: str) -> list[dict]:
 
 def search(keyword: str) -> list[dict]:
     """搜索股票代码"""
-    return _run(f"search {keyword}")
+    return _run(f"search {keyword}", timeout=SEARCH_TIMEOUT_SECONDS)
 
 
 def minute(code: str) -> list[dict]:

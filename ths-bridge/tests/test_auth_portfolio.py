@@ -39,6 +39,16 @@ def test_register_duplicate_email_rejected() -> None:
     assert duplicate.status_code == 409
 
 
+def test_health_exposes_deployment_diagnostics() -> None:
+    response = client().get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["auth"]["jwtSecretConfigured"] is True
+    assert body["auth"]["jwtSecretFingerprint"]
+    assert body["database"]["kind"].startswith("sqlite")
+    assert "warnings" in body
+
+
 def test_login_success_and_failure() -> None:
     c = client()
     register(c)
@@ -167,6 +177,9 @@ def test_portfolio_owned_and_replaced_atomically() -> None:
 def test_stock_search_falls_back_to_twelve_data(monkeypatch) -> None:
     import app as app_module
 
+    with app_module._search_cache_lock:
+        app_module._search_cache.clear()
+
     def fail_search(_query: str) -> list[dict]:
         raise RuntimeError("westock timeout")
 
@@ -185,6 +198,45 @@ def test_stock_search_falls_back_to_twelve_data(monkeypatch) -> None:
     body = response.json()
     assert body["provider"] == "twelvedata"
     assert body["items"][0]["symbol"] == "SIVEF"
+
+
+def test_short_stock_search_does_not_call_upstream(monkeypatch) -> None:
+    import app as app_module
+
+    def fail_if_called(_query: str) -> list[dict]:
+        raise AssertionError("westock should not be called for short queries")
+
+    monkeypatch.setattr(app_module.wc, "search", fail_if_called)
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
+
+    response = client().get("/v1/stocks/search", params={"q": "S"})
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+def test_stock_search_uses_cache(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._search_cache_lock:
+        app_module._search_cache.clear()
+
+    calls = {"count": 0}
+
+    def fake_search(_query: str) -> list[dict]:
+        calls["count"] += 1
+        return [{"code": "usMU.OQ", "name": "Micron Technology", "type": "GP"}]
+
+    monkeypatch.setattr(app_module.wc, "search", fake_search)
+
+    c = client()
+    first = c.get("/v1/stocks/search", params={"q": "MU"})
+    second = c.get("/v1/stocks/search", params={"q": "MU"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["count"] == 1
+    assert first.json()["items"][0]["symbol"] == "MU"
+    assert second.json()["items"][0]["symbol"] == "MU"
 
 
 def test_stock_quote_falls_back_to_twelve_data(monkeypatch) -> None:
