@@ -34,6 +34,11 @@ struct PortfolioPayload: Codable, Equatable {
     var stocks: [RemoteStockPosition]
 }
 
+struct PasswordResetResponse: Codable, Equatable {
+    let status: String
+    let code: String
+}
+
 struct PortfolioResponse: Codable, Equatable {
     let funds: [RemoteFundPosition]
     let stocks: [RemoteStockPosition]
