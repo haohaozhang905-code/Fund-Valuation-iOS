@@ -773,6 +773,7 @@ private struct StockEditorView: View {
     @State private var isSearching = false
     @State private var selectedDisplayName: String?
     @State private var searchTask: Task<Void, Never>?
+    @State private var hasSearched = false
     @FocusState private var focusedField: Field?
 
     init(
@@ -1028,7 +1029,9 @@ private struct StockEditorView: View {
     }
 
     private var isValid: Bool {
-        StockPosition.isValidSymbol(symbol) && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
+        StockPosition.isValidSymbol(symbol)
+            && hasSearched && !searchResults.isEmpty
+            && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
     }
 
     private func scheduleSearch(for raw: String) {
@@ -1037,8 +1040,10 @@ private struct StockEditorView: View {
         guard query.count >= 1 else {
             searchResults = []
             isSearching = false
+            hasSearched = false
             return
         }
+        hasSearched = false
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 80_000_000)
             guard !Task.isCancelled else { return }
@@ -1046,7 +1051,11 @@ private struct StockEditorView: View {
             let results = await viewModel.searchSymbols(query: query)
             guard !Task.isCancelled else { return }
             searchResults = results
+            if let first = results.first {
+                selectedDisplayName = first.description
+            }
             isSearching = false
+            hasSearched = true
         }
     }
 

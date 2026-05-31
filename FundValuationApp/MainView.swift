@@ -1650,6 +1650,7 @@ private struct FundEditorView: View {
     @State private var isSearching = false
     @State private var selectedFundName: String?
     @State private var searchTask: Task<Void, Never>?
+    @State private var hasSearched = false
     @FocusState private var focusedField: Field?
 
     init(
@@ -1851,7 +1852,9 @@ private struct FundEditorView: View {
     }
 
     private var isValid: Bool {
-        FundPosition.normalizeCode(code).count == 6 && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
+        FundPosition.normalizeCode(code).count == 6
+            && hasSearched && !searchResults.isEmpty
+            && (Double(cost) ?? 0) > 0 && (Double(shares) ?? 0) > 0
     }
 
     @ViewBuilder
@@ -1914,8 +1917,10 @@ private struct FundEditorView: View {
         guard normalized.count == 6 else {
             searchResults = []
             isSearching = false
+            hasSearched = false
             return
         }
+        hasSearched = false
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 80_000_000)
             guard !Task.isCancelled else { return }
@@ -1927,6 +1932,7 @@ private struct FundEditorView: View {
                 selectedFundName = first.name
             }
             isSearching = false
+            hasSearched = true
         }
     }
 
