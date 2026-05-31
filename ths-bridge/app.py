@@ -16,9 +16,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 import sys
-# 优先同级目录加载 westock_client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import westock_client as wc
 import database
 from auth_service import (
     ACCESS_TOKEN_MINUTES,
@@ -52,10 +50,19 @@ logger = logging.getLogger("ths-bridge")
 app = FastAPI(title="THS Bridge", version="0.3.0")
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+YAHOO_BASE_URL = "https://query1.finance.yahoo.com"
 SEARCH_CACHE_TTL_SECONDS = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "300"))
 SEARCH_MIN_QUERY_LENGTH = int(os.getenv("SEARCH_MIN_QUERY_LENGTH", "2"))
+QUOTE_CACHE_TTL_SECONDS = int(os.getenv("QUOTE_CACHE_TTL_SECONDS", "60"))
+KLINE_CACHE_TTL_SECONDS = int(os.getenv("KLINE_CACHE_TTL_SECONDS", "3600"))
+WESTOCK_ENABLED = os.getenv("WESTOCK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 _search_cache_lock = threading.Lock()
 _search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_quote_cache_lock = threading.Lock()
+_quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_kline_cache_lock = threading.Lock()
+_kline_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_wc = None
 
 
 @app.on_event("startup")
@@ -90,6 +97,16 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def get_westock():
+    global _wc
+    if not WESTOCK_ENABLED:
+        raise RuntimeError("Westock is disabled")
+    if _wc is None:
+        import westock_client as westock_module
+        _wc = westock_module
+    return _wc
+
+
 def stable_fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
@@ -104,6 +121,8 @@ def deployment_warnings() -> list[str]:
         warnings.append("JWT_SECRET is not explicitly configured; token validity may be unsafe for production.")
     if database.DATABASE_URL.startswith("sqlite") and database.DB_FILE_PATH and not os.path.isabs(database.DB_FILE_PATH):
         warnings.append("DATABASE_URL uses a relative SQLite file; container redeploys may lose account data without a persistent volume.")
+    if WESTOCK_ENABLED:
+        warnings.append("WESTOCK_ENABLED is true; westock uses Node subprocesses and can increase memory usage under load.")
     return warnings
 
 
@@ -130,6 +149,47 @@ def set_cached_search(q: str, market: str, payload: dict[str, Any]) -> dict[str,
     with _search_cache_lock:
         _search_cache[key] = (time.monotonic() + SEARCH_CACHE_TTL_SECONDS, payload)
     return payload
+
+
+def get_ttl_cache(cache: dict[str, tuple[float, dict[str, Any]]], lock: threading.Lock, key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with lock:
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at <= now:
+            cache.pop(key, None)
+            return None
+        return payload
+
+
+def set_ttl_cache(
+    cache: dict[str, tuple[float, dict[str, Any]]],
+    lock: threading.Lock,
+    key: str,
+    ttl: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    with lock:
+        cache[key] = (time.monotonic() + ttl, payload)
+    return payload
+
+
+def get_cached_quote(symbol: str) -> dict[str, Any] | None:
+    return get_ttl_cache(_quote_cache, _quote_cache_lock, symbol.upper().strip())
+
+
+def set_cached_quote(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return set_ttl_cache(_quote_cache, _quote_cache_lock, symbol.upper().strip(), QUOTE_CACHE_TTL_SECONDS, payload)
+
+
+def get_cached_kline(symbol: str, count: int) -> dict[str, Any] | None:
+    return get_ttl_cache(_kline_cache, _kline_cache_lock, f"{symbol.upper().strip()}:{count}")
+
+
+def set_cached_kline(symbol: str, count: int, payload: dict[str, Any]) -> dict[str, Any]:
+    return set_ttl_cache(_kline_cache, _kline_cache_lock, f"{symbol.upper().strip()}:{count}", KLINE_CACHE_TTL_SECONDS, payload)
 
 
 def parse_float(value: Any, default: float = 0.0) -> float:
@@ -171,6 +231,148 @@ def twelve_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
     if is_twelve_error(payload):
         raise RuntimeError(f"Twelve Data error: {payload.get('message', payload)}")
     return payload
+
+
+def yahoo_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    with httpx.Client(timeout=8, headers=headers) as client:
+        response = client.get(f"{YAHOO_BASE_URL}{path}", params=params)
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("Yahoo returned invalid payload")
+    return payload
+
+
+def yahoo_symbol_search(query: str) -> list[dict[str, Any]]:
+    try:
+        payload = yahoo_get("/v1/finance/search", {"q": query.strip().upper(), "quotesCount": 8, "newsCount": 0})
+    except Exception as e:
+        logger.warning("yahoo search failed for %s: %s", query, e)
+        return []
+
+    quotes = payload.get("quotes", [])
+    if not isinstance(quotes, list):
+        return []
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in quotes:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol", "")).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        quote_type = str(row.get("quoteType") or row.get("typeDisp") or "").upper()
+        if quote_type and quote_type not in {"EQUITY", "ETF"}:
+            continue
+        seen.add(symbol)
+        exchange = str(row.get("exchange") or row.get("exchDisp") or "").upper()
+        name = str(row.get("shortname") or row.get("longname") or symbol).strip()
+        is_etf = quote_type == "ETF"
+        items.append({
+            "symbol": symbol,
+            "name": name,
+            "displaySymbol": f"{symbol}.{exchange}" if exchange else symbol,
+            "market": exchange or "US",
+            "type": "ETF" if is_etf else "Common Stock",
+            "isEquity": True,
+        })
+    return items
+
+
+def yahoo_chart_result(symbol: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        payload = yahoo_get(f"/v8/finance/chart/{symbol}", params)
+    except Exception as e:
+        logger.warning("yahoo chart failed for %s: %s", symbol, e)
+        return None
+    chart = payload.get("chart", {})
+    result = chart.get("result", []) if isinstance(chart, dict) else []
+    if not result:
+        return None
+    first = result[0]
+    return first if isinstance(first, dict) else None
+
+
+def yahoo_quote(ticker: str) -> dict[str, Any] | None:
+    symbol = ticker.upper().strip()
+    result = yahoo_chart_result(symbol, {"range": "5d", "interval": "1d"})
+    if not result:
+        return None
+    meta = result.get("meta", {})
+    if not isinstance(meta, dict):
+        return None
+    price = parse_float(meta.get("regularMarketPrice"))
+    prev_close = parse_float(meta.get("previousClose") or meta.get("chartPreviousClose"))
+    if price <= 0:
+        return None
+    change = price - prev_close if prev_close > 0 else 0
+    change_pct = change / prev_close * 100 if prev_close > 0 else 0
+    ts = parse_int(meta.get("regularMarketTime"))
+    regular_timestamp = datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else now_iso()
+    return {
+        "symbol": symbol,
+        "name": symbol,
+        "currency": str(meta.get("currency") or "USD"),
+        "regularPrice": round(price, 4),
+        "previousClose": round(prev_close, 4) if prev_close > 0 else None,
+        "change": round(change, 4),
+        "changePercent": round(change_pct, 4),
+        "marketState": "regular" if str(meta.get("marketState", "")).upper() == "REGULAR" else "closed",
+        "regularTimestamp": regular_timestamp,
+        "extendedPrice": None,
+        "extendedChange": None,
+        "extendedChangePercent": None,
+        "extendedTimestamp": None,
+        "provider": "yahoo",
+        "providerLabel": "Yahoo Finance",
+        "isStale": False,
+        "fetchedAt": now_iso(),
+        "open": parse_float(meta.get("regularMarketOpen")),
+        "high": parse_float(meta.get("regularMarketDayHigh")),
+        "low": parse_float(meta.get("regularMarketDayLow")),
+        "volume": parse_int(meta.get("regularMarketVolume")),
+    }
+
+
+def yahoo_kline(ticker: str, count: int) -> dict[str, Any] | None:
+    symbol = ticker.upper().strip()
+    range_value = "6mo" if count <= 126 else "1y"
+    result = yahoo_chart_result(symbol, {"range": range_value, "interval": "1d"})
+    if not result:
+        return None
+    timestamps = result.get("timestamp", [])
+    indicators = result.get("indicators", {})
+    quotes = indicators.get("quote", []) if isinstance(indicators, dict) else []
+    if not isinstance(timestamps, list) or not quotes or not isinstance(quotes[0], dict):
+        return None
+    quote = quotes[0]
+    rows = []
+    for idx, ts in enumerate(timestamps):
+        close = parse_float((quote.get("close") or [None])[idx] if idx < len(quote.get("close") or []) else None)
+        if close <= 0:
+            continue
+        rows.append({
+            "date": datetime.fromtimestamp(parse_int(ts), timezone.utc).date().isoformat(),
+            "open": round(parse_float((quote.get("open") or [None])[idx] if idx < len(quote.get("open") or []) else None), 4),
+            "high": round(parse_float((quote.get("high") or [None])[idx] if idx < len(quote.get("high") or []) else None), 4),
+            "low": round(parse_float((quote.get("low") or [None])[idx] if idx < len(quote.get("low") or []) else None), 4),
+            "close": round(close, 4),
+            "volume": parse_int((quote.get("volume") or [None])[idx] if idx < len(quote.get("volume") or []) else None),
+            "changePercent": 0,
+        })
+    points = list(reversed(rows))[:count]
+    if not points:
+        return None
+    return {
+        "symbol": symbol,
+        "code": symbol,
+        "count": len(points),
+        "items": points,
+        "provider": "yahoo",
+        "fetchedAt": now_iso(),
+    }
 
 
 def twelve_symbol_search(query: str) -> list[dict[str, Any]]:
@@ -309,6 +511,7 @@ def resolve_us_code(ticker: str) -> str:
     """
     ticker = ticker.upper().strip()
     logger.info("resolve_us_code: searching for %s", ticker)
+    wc = get_westock()
     results = wc.search(ticker)
     if results:
         logger.info("resolve_us_code: search returned %d results for %s", len(results), ticker)
@@ -348,6 +551,12 @@ def health() -> dict[str, Any]:
             "jwtSecretConfigured": jwt_secret_configured(),
             "jwtSecretFingerprint": stable_fingerprint(jwt_secret),
             "accessTokenMinutes": ACCESS_TOKEN_MINUTES,
+        },
+        "stocks": {
+            "westockEnabled": WESTOCK_ENABLED,
+            "searchCacheTtlSeconds": SEARCH_CACHE_TTL_SECONDS,
+            "quoteCacheTtlSeconds": QUOTE_CACHE_TTL_SECONDS,
+            "klineCacheTtlSeconds": KLINE_CACHE_TTL_SECONDS,
         },
         "warnings": deployment_warnings(),
     }
@@ -441,6 +650,11 @@ def confirm_password_reset(payload: PasswordResetConfirmRequest, db: Session = D
 @app.post("/v1/auth/logout")
 def logout(_: User = Depends(current_user)) -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/auth/me", response_model=UserOut)
+def me(user: User = Depends(current_user)) -> UserOut:
+    return UserOut(id=user.id, email=user.email_lower)
 
 
 @app.delete("/v1/account")
@@ -567,15 +781,24 @@ def search_stocks(q: str, market: str = "US",
         logger.info("search: cache hit for %s", query)
         return cached
 
+    items = yahoo_symbol_search(query)
+    if items:
+        return set_cached_search(query, market, {"items": items, "provider": "yahoo", "fetchedAt": now_iso()})
+    items = twelve_symbol_search(query)
+    if items:
+        return set_cached_search(query, market, {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()})
+
+    if not WESTOCK_ENABLED:
+        return set_cached_search(query, market, {"items": [], "provider": "none", "fetchedAt": now_iso()})
+
     logger.info("search: calling wc.search(%s)", query)
     try:
+        wc = get_westock()
         results = wc.search(query)
         logger.info("search: got %d results for %s", len(results), query)
-        westock_available = True
     except Exception as e:
         logger.warning("search: westock failed for %s: %s", query, e)
         results = []
-        westock_available = False
     items = []
     seen = set()
     for r in results:
@@ -600,14 +823,10 @@ def search_stocks(q: str, market: str = "US",
         })
     if items:
         return set_cached_search(query, market, {"items": items, "provider": "westock", "fetchedAt": now_iso()})
-    items = twelve_symbol_search(query)
-    if items:
-        return set_cached_search(query, market, {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()})
 
     # Do not validate misses with kline here. Search runs while the user types,
     # so fallback quote/kline probes belong to explicit quote/detail requests.
-    provider = "westock" if westock_available else "none"
-    return set_cached_search(query, market, {"items": [], "provider": provider, "fetchedAt": now_iso()})
+    return set_cached_search(query, market, {"items": [], "provider": "westock", "fetchedAt": now_iso()})
 
 
 # ====== 实时报价 ======
@@ -620,64 +839,76 @@ def stock_quote(symbol: str, market: str = "US",
     ticker = symbol.upper().strip()
     logger.info("quote: resolving code for %s", ticker)
 
-    try:
-        code = resolve_us_code(ticker)
-        logger.info("quote: resolved %s -> %s", ticker, code)
-        logger.info("quote: calling wc.kline(%s)", code)
-        kdata = wc.kline(code)
-        logger.info("quote: got %d kline rows for %s", len(kdata), code)
-        if kdata:
-            latest = kdata[0]  # 最新交易日
-            prev = kdata[1] if len(kdata) > 1 else kdata[0]
+    cached = get_cached_quote(ticker)
+    if cached is not None:
+        logger.info("quote: cache hit for %s", ticker)
+        return cached
 
-            regular_price = float(latest["last"])
-            prev_close = float(prev["last"])
-            change = regular_price - prev_close
-            change_pct = (change / prev_close * 100) if prev_close > 0 else 0
-
-            # 搜索名称
-            name = ticker
-            try:
-                sr = wc.search(ticker)
-                if sr:
-                    name = sr[0].get("name", ticker)
-                    logger.info("quote: resolved name=%s for %s", name, ticker)
-            except Exception as e:
-                logger.warning("quote: name search failed for %s: %s", ticker, e)
-
-            now = now_iso()
-            logger.info("quote: returning westock response for %s: price=%s, prevClose=%s, change=%.2f%%",
-                        ticker, latest.get("last"), prev.get("last"), change_pct)
-            return {
-                "symbol": ticker,
-                "name": name,
-                "currency": "USD",
-                "regularPrice": round(regular_price, 4),
-                "previousClose": round(prev_close, 4),
-                "change": round(change, 4),
-                "changePercent": round(change_pct, 4),
-                "marketState": "regular" if _is_us_market_open() else "closed",
-                "regularTimestamp": f"{latest['date']} 16:00:00",
-                "extendedPrice": None,
-                "extendedChange": None,
-                "extendedChangePercent": None,
-                "extendedTimestamp": None,
-                "provider": "westock",
-                "providerLabel": "Westock",
-                "isStale": False,
-                "fetchedAt": now,
-                "open": float(latest.get("open", 0)),
-                "high": float(latest.get("high", 0)),
-                "low": float(latest.get("low", 0)),
-                "volume": int(latest.get("volume", 0)),
-            }
-    except Exception as e:
-        logger.warning("quote: westock failed for %s: %s", ticker, e)
+    quote = yahoo_quote(ticker)
+    if quote:
+        logger.info("quote: returning yahoo response for %s", ticker)
+        return set_cached_quote(ticker, quote)
 
     quote = twelve_quote(ticker)
     if quote:
         logger.info("quote: returning twelve data response for %s", ticker)
-        return quote
+        return set_cached_quote(ticker, quote)
+
+    if WESTOCK_ENABLED:
+        try:
+            wc = get_westock()
+            code = resolve_us_code(ticker)
+            logger.info("quote: resolved %s -> %s", ticker, code)
+            logger.info("quote: calling wc.kline(%s)", code)
+            kdata = wc.kline(code)
+            logger.info("quote: got %d kline rows for %s", len(kdata), code)
+            if kdata:
+                latest = kdata[0]  # 最新交易日
+                prev = kdata[1] if len(kdata) > 1 else kdata[0]
+
+                regular_price = float(latest["last"])
+                prev_close = float(prev["last"])
+                change = regular_price - prev_close
+                change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+
+                # 搜索名称
+                name = ticker
+                try:
+                    sr = wc.search(ticker)
+                    if sr:
+                        name = sr[0].get("name", ticker)
+                        logger.info("quote: resolved name=%s for %s", name, ticker)
+                except Exception as e:
+                    logger.warning("quote: name search failed for %s: %s", ticker, e)
+
+                now = now_iso()
+                logger.info("quote: returning westock response for %s: price=%s, prevClose=%s, change=%.2f%%",
+                            ticker, latest.get("last"), prev.get("last"), change_pct)
+                return set_cached_quote(ticker, {
+                    "symbol": ticker,
+                    "name": name,
+                    "currency": "USD",
+                    "regularPrice": round(regular_price, 4),
+                    "previousClose": round(prev_close, 4),
+                    "change": round(change, 4),
+                    "changePercent": round(change_pct, 4),
+                    "marketState": "regular" if _is_us_market_open() else "closed",
+                    "regularTimestamp": f"{latest['date']} 16:00:00",
+                    "extendedPrice": None,
+                    "extendedChange": None,
+                    "extendedChangePercent": None,
+                    "extendedTimestamp": None,
+                    "provider": "westock",
+                    "providerLabel": "Westock",
+                    "isStale": False,
+                    "fetchedAt": now,
+                    "open": float(latest.get("open", 0)),
+                    "high": float(latest.get("high", 0)),
+                    "low": float(latest.get("low", 0)),
+                    "volume": int(latest.get("volume", 0)),
+                })
+        except Exception as e:
+            logger.warning("quote: westock failed for %s: %s", ticker, e)
     raise HTTPException(status_code=502, detail=f"No data for {ticker}")
 
 
@@ -695,41 +926,53 @@ def stock_kline(symbol: str, count: int = 120,
     ticker = symbol.upper().strip()
     logger.info("kline: resolving code for %s", ticker)
 
-    try:
-        code = resolve_us_code(ticker)
-        logger.info("kline: resolved %s -> %s", ticker, code)
-        logger.info("kline: calling wc.kline(%s)", code)
-        kdata = wc.kline(code)
-        logger.info("kline: got %d rows for %s", len(kdata), code)
-        if kdata:
-            points = []
-            for i, row in enumerate(kdata[:count]):
-                points.append({
-                    "date": row.get("date", ""),
-                    "open": round(float(row.get("open", 0)), 4),
-                    "high": round(float(row.get("high", 0)), 4),
-                    "low": round(float(row.get("low", 0)), 4),
-                    "close": round(float(row.get("last", 0)), 4),
-                    "volume": int(row.get("volume", 0)),
-                    "changePercent": round(float(row.get("exchange", 0)), 4),
-                })
+    cached = get_cached_kline(ticker, count)
+    if cached is not None:
+        logger.info("kline: cache hit for %s count=%d", ticker, count)
+        return cached
 
-            return {
-                "symbol": ticker,
-                "code": code,
-                "count": len(points),
-                "items": points,
-                "provider": "westock",
-                "fetchedAt": now_iso(),
-            }
-        logger.error("kline: no westock data for %s (code=%s)", ticker, code)
-    except Exception as e:
-        logger.warning("kline: westock failed for %s: %s", ticker, e)
+    kline = yahoo_kline(ticker, count)
+    if kline:
+        logger.info("kline: returning yahoo response for %s", ticker)
+        return set_cached_kline(ticker, count, kline)
 
     kline = twelve_kline(ticker, count)
     if kline:
         logger.info("kline: returning twelve data response for %s", ticker)
-        return kline
+        return set_cached_kline(ticker, count, kline)
+
+    if WESTOCK_ENABLED:
+        try:
+            wc = get_westock()
+            code = resolve_us_code(ticker)
+            logger.info("kline: resolved %s -> %s", ticker, code)
+            logger.info("kline: calling wc.kline(%s)", code)
+            kdata = wc.kline(code)
+            logger.info("kline: got %d rows for %s", len(kdata), code)
+            if kdata:
+                points = []
+                for i, row in enumerate(kdata[:count]):
+                    points.append({
+                        "date": row.get("date", ""),
+                        "open": round(float(row.get("open", 0)), 4),
+                        "high": round(float(row.get("high", 0)), 4),
+                        "low": round(float(row.get("low", 0)), 4),
+                        "close": round(float(row.get("last", 0)), 4),
+                        "volume": int(row.get("volume", 0)),
+                        "changePercent": round(float(row.get("exchange", 0)), 4),
+                    })
+
+                return set_cached_kline(ticker, count, {
+                    "symbol": ticker,
+                    "code": code,
+                    "count": len(points),
+                    "items": points,
+                    "provider": "westock",
+                    "fetchedAt": now_iso(),
+                })
+            logger.error("kline: no westock data for %s (code=%s)", ticker, code)
+        except Exception as e:
+            logger.warning("kline: westock failed for %s: %s", ticker, e)
     raise HTTPException(status_code=502, detail=f"No kline data for {ticker}")
 
 

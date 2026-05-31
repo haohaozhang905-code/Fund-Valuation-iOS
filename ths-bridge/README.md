@@ -30,11 +30,14 @@ BRIDGE_ACCESS_TOKEN=
 THS_UPSTREAM_BASE_URL=
 THS_UPSTREAM_TOKEN=
 TWELVE_DATA_API_KEY=
-WESTOCK_MAX_CONCURRENCY=2
+WESTOCK_ENABLED=false
+WESTOCK_MAX_CONCURRENCY=1
 WESTOCK_SEARCH_TIMEOUT_SECONDS=15
 WESTOCK_COMMAND_TIMEOUT_SECONDS=30
 SEARCH_CACHE_TTL_SECONDS=300
 SEARCH_MIN_QUERY_LENGTH=2
+QUOTE_CACHE_TTL_SECONDS=60
+KLINE_CACHE_TTL_SECONDS=3600
 DATABASE_URL=sqlite:///./ths_bridge.db
 JWT_SECRET=change-me
 ACCESS_TOKEN_MINUTES=43200
@@ -42,13 +45,16 @@ ACCESS_TOKEN_MINUTES=43200
 
 `THS_UPSTREAM_BASE_URL` 保持泛化命名。上游可以是同花顺 iFinD、thsdk、Westock，或另一个已经封装好行情能力的 HTTP 服务。Bridge 的职责是把上游响应适配成 iOS 需要的统一字段。
 
-`TWELVE_DATA_API_KEY` 用于 Westock 搜索/行情失败时的美股 OTC 兜底，例如 `SIVEF` 这类 OTC Markets 代码。
+普通美股优先走 Yahoo Finance 的轻量 HTTP 接口，不消耗 Twelve Data 额度。`TWELVE_DATA_API_KEY` 用于 OTC/缺口兜底，例如 `SIVEF` 这类 OTC Markets 代码。生产环境默认关闭 Westock，避免 Node 子进程打满内存。
 
 搜索性能保护：
 
 - `SEARCH_MIN_QUERY_LENGTH=2`：少于 2 个字符不触发后端搜索。
 - `SEARCH_CACHE_TTL_SECONDS=300`：搜索结果缓存 5 分钟，重复输入不会重复打上游。
-- `WESTOCK_MAX_CONCURRENCY=2`：限制 Westock Node 子进程并发，避免搜索流量打满 CPU/内存。
+- `QUOTE_CACHE_TTL_SECONDS=60`：报价缓存 60 秒，避免添加/刷新持仓时重复打上游。
+- `KLINE_CACHE_TTL_SECONDS=3600`：K 线缓存 1 小时。
+- `WESTOCK_ENABLED=false`：默认关闭 Westock Node 子进程；只有 Twelve Data 不满足需求时再打开。
+- `WESTOCK_MAX_CONCURRENCY=1`：打开 Westock 时限制 Node 子进程并发，避免搜索流量打满 CPU/内存。
 - `WESTOCK_SEARCH_TIMEOUT_SECONDS=15`：搜索子进程 15 秒超时，失败后可走 Twelve Data 兜底。
 
 获取 Twelve Data API Key：
@@ -70,10 +76,13 @@ Zeabur 生产环境至少应配置：
 DATABASE_URL=sqlite:////app/data/ths_bridge.db
 JWT_SECRET=<固定不变的强随机字符串>
 TWELVE_DATA_API_KEY=<Twelve Data API Key>
-WESTOCK_MAX_CONCURRENCY=2
+WESTOCK_ENABLED=false
+WESTOCK_MAX_CONCURRENCY=1
 WESTOCK_SEARCH_TIMEOUT_SECONDS=15
 SEARCH_CACHE_TTL_SECONDS=300
 SEARCH_MIN_QUERY_LENGTH=2
+QUOTE_CACHE_TTL_SECONDS=60
+KLINE_CACHE_TTL_SECONDS=3600
 ```
 
 注意 SQLite 绝对路径格式有 4 个斜杠：`sqlite:////app/data/ths_bridge.db`。如果写成 `sqlite:///app/data/ths_bridge.db`，SQLAlchemy 通常也会解析为 `/app/data/ths_bridge.db`，但生产配置建议使用标准绝对路径写法。

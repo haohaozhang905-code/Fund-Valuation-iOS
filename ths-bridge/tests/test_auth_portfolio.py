@@ -51,7 +51,10 @@ def test_health_exposes_deployment_diagnostics() -> None:
 
 def test_login_success_and_failure() -> None:
     c = client()
-    register(c)
+    token = register(c)
+    me = c.get("/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["email"] == "user@example.com"
     ok = c.post("/v1/auth/login", json={"email": "user@example.com", "password": "password123"})
     assert ok.status_code == 200
     assert ok.json()["accessToken"]
@@ -174,16 +177,38 @@ def test_portfolio_owned_and_replaced_atomically() -> None:
     assert len(after_bad.json()["stocks"]) == 1
 
 
-def test_stock_search_falls_back_to_twelve_data(monkeypatch) -> None:
+def test_stock_search_uses_yahoo_before_twelve_or_westock(monkeypatch) -> None:
     import app as app_module
 
     with app_module._search_cache_lock:
         app_module._search_cache.clear()
 
-    def fail_search(_query: str) -> list[dict]:
-        raise RuntimeError("westock timeout")
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", lambda _query: [{
+        "symbol": "MU",
+        "name": "Micron Technology",
+        "displaySymbol": "MU.NASDAQ",
+        "market": "NASDAQ",
+        "type": "Common Stock",
+        "isEquity": True,
+    }])
 
-    monkeypatch.setattr(app_module.wc, "search", fail_search)
+    response = client().get("/v1/stocks/search", params={"q": "MU"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "yahoo"
+    assert body["items"][0]["symbol"] == "MU"
+
+
+def test_stock_search_uses_twelve_data_when_yahoo_misses(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._search_cache_lock:
+        app_module._search_cache.clear()
+
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", lambda _query: [])
     monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: [{
         "symbol": "SIVEF",
         "name": "Sivers Semiconductors AB (publ)",
@@ -195,18 +220,14 @@ def test_stock_search_falls_back_to_twelve_data(monkeypatch) -> None:
 
     response = client().get("/v1/stocks/search", params={"q": "SIVEF"})
     assert response.status_code == 200
-    body = response.json()
-    assert body["provider"] == "twelvedata"
-    assert body["items"][0]["symbol"] == "SIVEF"
+    assert response.json()["provider"] == "twelvedata"
 
 
 def test_short_stock_search_does_not_call_upstream(monkeypatch) -> None:
     import app as app_module
 
-    def fail_if_called(_query: str) -> list[dict]:
-        raise AssertionError("westock should not be called for short queries")
-
-    monkeypatch.setattr(app_module.wc, "search", fail_if_called)
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", lambda _query: (_ for _ in ()).throw(AssertionError("yahoo should not be called")))
     monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
 
     response = client().get("/v1/stocks/search", params={"q": "S"})
@@ -222,11 +243,20 @@ def test_stock_search_uses_cache(monkeypatch) -> None:
 
     calls = {"count": 0}
 
-    def fake_search(_query: str) -> list[dict]:
+    def fake_yahoo_search(_query: str) -> list[dict]:
         calls["count"] += 1
-        return [{"code": "usMU.OQ", "name": "Micron Technology", "type": "GP"}]
+        return [{
+            "symbol": "MU",
+            "name": "Micron Technology",
+            "displaySymbol": "MU.NASDAQ",
+            "market": "NASDAQ",
+            "type": "Common Stock",
+            "isEquity": True,
+        }]
 
-    monkeypatch.setattr(app_module.wc, "search", fake_search)
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", fake_yahoo_search)
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
 
     c = client()
     first = c.get("/v1/stocks/search", params={"q": "MU"})
@@ -239,13 +269,53 @@ def test_stock_search_uses_cache(monkeypatch) -> None:
     assert second.json()["items"][0]["symbol"] == "MU"
 
 
-def test_stock_quote_falls_back_to_twelve_data(monkeypatch) -> None:
+def test_stock_quote_uses_yahoo_before_twelve_or_westock(monkeypatch) -> None:
     import app as app_module
 
-    def fail_resolve(_ticker: str) -> str:
-        raise RuntimeError("westock timeout")
+    with app_module._quote_cache_lock:
+        app_module._quote_cache.clear()
 
-    monkeypatch.setattr(app_module, "resolve_us_code", fail_resolve)
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "twelve_quote", lambda _ticker: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
+    monkeypatch.setattr(app_module, "yahoo_quote", lambda _ticker: {
+        "symbol": "MU",
+        "name": "MU",
+        "currency": "USD",
+        "regularPrice": 80.0,
+        "previousClose": 79.0,
+        "change": 1.0,
+        "changePercent": 1.2658,
+        "marketState": "closed",
+        "regularTimestamp": "2026-05-29",
+        "extendedPrice": None,
+        "extendedChange": None,
+        "extendedChangePercent": None,
+        "extendedTimestamp": None,
+        "provider": "yahoo",
+        "providerLabel": "Yahoo Finance",
+        "isStale": False,
+        "fetchedAt": app_module.now_iso(),
+        "open": 79.5,
+        "high": 81.0,
+        "low": 79.0,
+        "volume": 1000,
+    })
+
+    response = client().get("/v1/stocks/quote", params={"symbol": "MU"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "yahoo"
+    assert body["regularPrice"] == 80.0
+
+
+def test_stock_quote_uses_twelve_data_when_yahoo_misses(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._quote_cache_lock:
+        app_module._quote_cache.clear()
+
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_quote", lambda _ticker: None)
     monkeypatch.setattr(app_module, "twelve_quote", lambda _ticker: {
         "symbol": "SIVEF",
         "name": "Sivers Semiconductors AB (publ)",
@@ -277,13 +347,46 @@ def test_stock_quote_falls_back_to_twelve_data(monkeypatch) -> None:
     assert body["regularPrice"] == 0.1234
 
 
-def test_stock_kline_falls_back_to_twelve_data(monkeypatch) -> None:
+def test_stock_kline_uses_yahoo_before_twelve_or_westock(monkeypatch) -> None:
     import app as app_module
 
-    def fail_resolve(_ticker: str) -> str:
-        raise RuntimeError("westock timeout")
+    with app_module._kline_cache_lock:
+        app_module._kline_cache.clear()
 
-    monkeypatch.setattr(app_module, "resolve_us_code", fail_resolve)
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "twelve_kline", lambda _ticker, _count: (_ for _ in ()).throw(AssertionError("twelve should not be called")))
+    monkeypatch.setattr(app_module, "yahoo_kline", lambda _ticker, _count: {
+        "symbol": "MU",
+        "code": "MU",
+        "count": 1,
+        "items": [{
+            "date": "2026-05-29",
+            "open": 79.5,
+            "high": 81.0,
+            "low": 79.0,
+            "close": 80.0,
+            "volume": 1000,
+            "changePercent": 0,
+        }],
+        "provider": "yahoo",
+        "fetchedAt": app_module.now_iso(),
+    })
+
+    response = client().get("/v1/stocks/kline", params={"symbol": "MU", "count": 120})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "yahoo"
+    assert body["items"][0]["close"] == 80.0
+
+
+def test_stock_kline_uses_twelve_data_when_yahoo_misses(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._kline_cache_lock:
+        app_module._kline_cache.clear()
+
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_kline", lambda _ticker, _count: None)
     monkeypatch.setattr(app_module, "twelve_kline", lambda _ticker, _count: {
         "symbol": "SIVEF",
         "code": "SIVEF.OTC",

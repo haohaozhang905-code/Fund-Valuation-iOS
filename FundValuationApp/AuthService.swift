@@ -53,6 +53,10 @@ struct AuthService {
         let _: EmptyResponse? = try? await send(path: "/v1/auth/logout", method: "POST", body: Optional<String>.none, token: token)
     }
 
+    func currentUser(token: String) async throws -> UserAccount {
+        try await send(path: "/v1/auth/me", method: "GET", body: Optional<String>.none, token: token)
+    }
+
     func deleteAccount(token: String) async throws {
         let _: EmptyResponse = try await send(path: "/v1/account", method: "DELETE", body: Optional<String>.none, token: token)
     }

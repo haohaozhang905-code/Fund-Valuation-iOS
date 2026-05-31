@@ -21,6 +21,7 @@ final class StockViewModel: ObservableObject {
     private let sortFieldKey = "stock_sort_field_v1"
     private let sortOrderKey = "stock_sort_order_v1"
     private let klineCacheKey = "stock_kline_cache_v1"
+    private let quoteRefreshBatchSize = 3
 
     var sortedSnapshots: [StockSnapshot] {
         snapshots.sorted { lhs, rhs in
@@ -81,21 +82,24 @@ final class StockViewModel: ObservableObject {
 
         let provider = makeProvider()
         var fetched: [(StockPosition, Result<StockQuote, Error>)] = []
-        await withTaskGroup(of: (StockPosition, Result<StockQuote, Error>).self) { group in
-            for position in positions {
-                group.addTask {
-                    do {
-                        let quote = try await self.withRetry {
-                            try await provider.fetchQuote(symbol: position.symbol)
+        for batchStart in stride(from: 0, to: positions.count, by: quoteRefreshBatchSize) {
+            let batch = Array(positions[batchStart..<min(batchStart + quoteRefreshBatchSize, positions.count)])
+            await withTaskGroup(of: (StockPosition, Result<StockQuote, Error>).self) { group in
+                for position in batch {
+                    group.addTask {
+                        do {
+                            let quote = try await self.withRetry {
+                                try await provider.fetchQuote(symbol: position.symbol)
+                            }
+                            return (position, .success(quote))
+                        } catch {
+                            return (position, .failure(error))
                         }
-                        return (position, .success(quote))
-                    } catch {
-                        return (position, .failure(error))
                     }
                 }
-            }
-            for await result in group {
-                fetched.append(result)
+                for await result in group {
+                    fetched.append(result)
+                }
             }
         }
 

@@ -33,7 +33,17 @@ final class SessionViewModel: ObservableObject {
             KeychainStore.read(tokenAccount)
         }.value
         guard let storedToken, !storedToken.isEmpty else { return }
-        accessToken = storedToken
+        do {
+            let current = try await service.currentUser(token: storedToken)
+            accessToken = storedToken
+            user = current
+            UserDefaults.standard.set(current.email, forKey: Self.emailKey)
+            UserDefaults.standard.set(current.id, forKey: Self.userIDKey)
+        } catch AuthServiceError.unauthorized {
+            expireSession(message: "登录已过期，请重新登录。")
+        } catch {
+            accessToken = storedToken
+        }
     }
 
     func register(email: String, password: String) async -> Bool {
@@ -103,9 +113,7 @@ final class SessionViewModel: ObservableObject {
                 statusMessage = "持仓已从账号同步。"
             }
         } catch AuthServiceError.unauthorized {
-            clearSession()
-            fundViewModel.clearLocalFunds()
-            stockViewModel.clearLocalPositions()
+            expireSession(message: "登录已过期，请重新登录。")
         } catch {
             if isNetworkUnreachable(error) {
                 statusMessage = ""
@@ -127,7 +135,7 @@ final class SessionViewModel: ObservableObject {
             )
             statusMessage = "持仓已同步。"
         } catch AuthServiceError.unauthorized {
-            clearSession()
+            expireSession(message: "登录已过期，请重新登录。")
         } catch {
             statusMessage = "持仓同步失败，稍后会以本地缓存为准。"
         }
@@ -186,6 +194,11 @@ final class SessionViewModel: ObservableObject {
         KeychainStore.delete(Self.tokenAccount)
         UserDefaults.standard.removeObject(forKey: Self.emailKey)
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
+    }
+
+    private func expireSession(message: String) {
+        clearSession()
+        statusMessage = message
     }
 
     /// 带超时的 async 包装器，seconds 内未完成抛出超时错误
