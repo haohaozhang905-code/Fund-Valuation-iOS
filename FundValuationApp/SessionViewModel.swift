@@ -34,15 +34,16 @@ final class SessionViewModel: ObservableObject {
         }.value
         guard let storedToken, !storedToken.isEmpty else { return }
         do {
-            let current = try await service.currentUser(token: storedToken)
+            let current = try await withThrowingTimeout(seconds: 5) {
+                try await self.service.currentUser(token: storedToken)
+            }
             accessToken = storedToken
             user = current
             UserDefaults.standard.set(current.email, forKey: Self.emailKey)
             UserDefaults.standard.set(current.id, forKey: Self.userIDKey)
-        } catch AuthServiceError.unauthorized {
-            expireSession(message: "登录已过期，请重新登录。")
         } catch {
-            accessToken = storedToken
+            // 任何失败（401/网络超时/连接失败）都清理，让用户重新登录
+            expireSession(message: "登录已过期，请重新登录。")
         }
     }
 
