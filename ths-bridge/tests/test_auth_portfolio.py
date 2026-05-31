@@ -264,6 +264,26 @@ def test_stock_search_probes_exact_symbol_when_indexes_miss(monkeypatch) -> None
     assert body["items"][0]["symbol"] == "SNXX"
 
 
+def test_stock_search_uses_symbol_override_when_indexes_and_probe_miss(monkeypatch) -> None:
+    import app as app_module
+
+    with app_module._search_cache_lock:
+        app_module._search_cache.clear()
+
+    monkeypatch.setattr(app_module, "get_westock", lambda: (_ for _ in ()).throw(AssertionError("westock should not be imported")))
+    monkeypatch.setattr(app_module, "yahoo_symbol_search", lambda _query: [])
+    monkeypatch.setattr(app_module, "twelve_symbol_search", lambda _query: [])
+    monkeypatch.setattr(app_module, "yahoo_quote", lambda _query: None)
+    monkeypatch.setattr(app_module, "twelve_quote", lambda _query: None)
+
+    response = client().get("/v1/stocks/search", params={"q": "NASA"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "override"
+    assert body["items"][0]["symbol"] == "NASA"
+    assert body["items"][0]["type"] == "ETF"
+
+
 def test_short_stock_search_does_not_call_upstream(monkeypatch) -> None:
     import app as app_module
 

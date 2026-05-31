@@ -56,6 +56,24 @@ SEARCH_MIN_QUERY_LENGTH = int(os.getenv("SEARCH_MIN_QUERY_LENGTH", "2"))
 QUOTE_CACHE_TTL_SECONDS = int(os.getenv("QUOTE_CACHE_TTL_SECONDS", "60"))
 KLINE_CACHE_TTL_SECONDS = int(os.getenv("KLINE_CACHE_TTL_SECONDS", "3600"))
 WESTOCK_ENABLED = os.getenv("WESTOCK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SYMBOL_OVERRIDES: dict[str, dict[str, Any]] = {
+    "NASA": {
+        "symbol": "NASA",
+        "name": "Tema Space Innovators ETF",
+        "displaySymbol": "NASA.NYSEARCA",
+        "market": "NYSEARCA",
+        "type": "ETF",
+        "isEquity": True,
+    },
+    "SNXX": {
+        "symbol": "SNXX",
+        "name": "Tradr 2X Long SNDK Daily ETF",
+        "displaySymbol": "SNXX.BATS",
+        "market": "BATS",
+        "type": "ETF",
+        "isEquity": True,
+    },
+}
 _search_cache_lock = threading.Lock()
 _search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _quote_cache_lock = threading.Lock()
@@ -119,6 +137,8 @@ def deployment_warnings() -> list[str]:
     warnings: list[str] = []
     if not jwt_secret_configured():
         warnings.append("JWT_SECRET is not explicitly configured; token validity may be unsafe for production.")
+    if os.getenv("JWT_SECRET", "").strip() == "change-me":
+        warnings.append("JWT_SECRET is set to the documented placeholder value; replace it with a strong random secret.")
     if database.DATABASE_URL.startswith("sqlite") and database.DB_FILE_PATH and not os.path.isabs(database.DB_FILE_PATH):
         warnings.append("DATABASE_URL uses a relative SQLite file; container redeploys may lose account data without a persistent volume.")
     if WESTOCK_ENABLED:
@@ -815,6 +835,9 @@ def search_stocks(q: str, market: str = "US",
     items, probe_provider = exact_symbol_probe(query, market)
     if items:
         return set_cached_search(query, market, {"items": items, "provider": probe_provider, "fetchedAt": now_iso()})
+
+    if query in SYMBOL_OVERRIDES:
+        return set_cached_search(query, market, {"items": [SYMBOL_OVERRIDES[query]], "provider": "override", "fetchedAt": now_iso()})
 
     if not WESTOCK_ENABLED:
         return set_cached_search(query, market, {"items": [], "provider": "none", "fetchedAt": now_iso()})
