@@ -90,6 +90,7 @@ final class SessionViewModel: ObservableObject {
 
     func bootstrapPortfolio(fundViewModel: FundViewModel, stockViewModel: StockViewModel) async {
         guard let token = accessToken else { return }
+        statusMessage = ""
         do {
             let remote = try await withThrowingTimeout(seconds: 5) {
                 try await self.service.fetchPortfolio(token: token)
