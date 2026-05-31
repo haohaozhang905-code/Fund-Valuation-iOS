@@ -92,7 +92,7 @@ final class SessionViewModel: ObservableObject {
         guard let token = accessToken else { return }
         statusMessage = ""
         do {
-            let remote = try await withThrowingTimeout(seconds: 5) {
+            let remote = try await withThrowingTimeout(seconds: 10) {
                 try await self.service.fetchPortfolio(token: token)
             }
             let hasRemote = !remote.funds.isEmpty || !remote.stocks.isEmpty
@@ -116,11 +116,7 @@ final class SessionViewModel: ObservableObject {
         } catch AuthServiceError.unauthorized {
             expireSession(message: "登录已过期，请重新登录。")
         } catch {
-            if isNetworkUnreachable(error) {
-                statusMessage = ""
-            } else {
-                statusMessage = "账号同步失败，已保留本地缓存。"
-            }
+            statusMessage = message(for: error)
         }
     }
 
