@@ -212,6 +212,13 @@ def set_cached_kline(symbol: str, count: int, payload: dict[str, Any]) -> dict[s
     return set_ttl_cache(_kline_cache, _kline_cache_lock, f"{symbol.upper().strip()}:{count}", KLINE_CACHE_TTL_SECONDS, payload)
 
 
+def is_symbol_like(query: str) -> bool:
+    normalized = query.upper().strip()
+    if not 1 <= len(normalized) <= 15:
+        return False
+    return all(ch.isalnum() or ch in ".-" for ch in normalized)
+
+
 def parse_float(value: Any, default: float = 0.0) -> float:
     if value is None or value == "":
         return default
@@ -825,19 +832,19 @@ def search_stocks(q: str, market: str = "US",
         logger.info("search: cache hit for %s", query)
         return cached
 
+    if is_symbol_like(query):
+        items, probe_provider = exact_symbol_probe(query, market)
+        if items:
+            return set_cached_search(query, market, {"items": items, "provider": probe_provider, "fetchedAt": now_iso()})
+        if query in SYMBOL_OVERRIDES:
+            return set_cached_search(query, market, {"items": [SYMBOL_OVERRIDES[query]], "provider": "override", "fetchedAt": now_iso()})
+
     items = yahoo_symbol_search(query)
     if items:
         return set_cached_search(query, market, {"items": items, "provider": "yahoo", "fetchedAt": now_iso()})
     items = twelve_symbol_search(query)
     if items:
         return set_cached_search(query, market, {"items": items, "provider": "twelvedata", "fetchedAt": now_iso()})
-
-    items, probe_provider = exact_symbol_probe(query, market)
-    if items:
-        return set_cached_search(query, market, {"items": items, "provider": probe_provider, "fetchedAt": now_iso()})
-
-    if query in SYMBOL_OVERRIDES:
-        return set_cached_search(query, market, {"items": [SYMBOL_OVERRIDES[query]], "provider": "override", "fetchedAt": now_iso()})
 
     if not WESTOCK_ENABLED:
         return set_cached_search(query, market, {"items": [], "provider": "none", "fetchedAt": now_iso()})
