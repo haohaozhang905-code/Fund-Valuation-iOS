@@ -47,7 +47,13 @@ from schemas import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ths-bridge")
 
-app = FastAPI(title="THS Bridge", version="0.3.0")
+app = FastAPI(
+    title="THS Bridge",
+    version="0.3.0",
+    json_encoders={
+        datetime: lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    },
+)
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 YAHOO_BASE_URL = "https://query1.finance.yahoo.com"
@@ -112,7 +118,12 @@ def require_access_token(authorization: str | None) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fmt_iso(dt: datetime) -> str:
+    """格式化日期为 iOS 能解析的格式（无微秒，Z 结尾）"""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_westock():
@@ -729,7 +740,7 @@ def debug_portfolio_raw(user: User = Depends(current_user), db: Session = Depend
                 "fundName": f.fund_name,
                 "costPrice": f.cost_price,
                 "shares": f.shares,
-                "clientUpdatedAt": f.client_updated_at.isoformat() if f.client_updated_at else None,
+                "clientUpdatedAt": fmt_iso(f.client_updated_at) if f.client_updated_at else None,
             }
             for f in funds
         ],
@@ -740,11 +751,11 @@ def debug_portfolio_raw(user: User = Depends(current_user), db: Session = Depend
                 "displayName": s.display_name,
                 "averageCost": s.average_cost,
                 "shares": s.shares,
-                "clientUpdatedAt": s.client_updated_at.isoformat() if s.client_updated_at else None,
+                "clientUpdatedAt": fmt_iso(s.client_updated_at) if s.client_updated_at else None,
             }
             for s in stocks
         ],
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": now_iso(),
     }
     return JSONResponse(content=data)
 

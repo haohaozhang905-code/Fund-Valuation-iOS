@@ -16,23 +16,34 @@ struct AuthService {
         baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
-            let raw = try container.decode(String.self)
-            if let date = Self.isoFormatter.date(from: raw) { return date }
-            // 兼容无微秒的格式
-            let fallback = ISO8601DateFormatter()
-            fallback.formatOptions = [.withInternetDateTime]
-            if let date = fallback.date(from: raw) { return date }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode date: \(raw)")
+            let raw = try container.decode(String.self).trimmingCharacters(in: .whitespaces)
+
+            // 归一化：补全时区信息、消去微秒高位
+            let normalized: String
+            if raw.contains("+") || raw.contains("Z") || raw.contains("z") {
+                // 有时区：替换微秒为毫秒（ISO8601DateFormatter 最多支持3位小数）
+                normalized = raw.replacingOccurrences(of: "\\.(\\d{3})\\d*", with: ".$1", options: .regularExpression)
+            } else {
+                // 无时区：补上 Z
+                let stripped = raw.replacingOccurrences(of: "\\.\\d+", with: "", options: .regularExpression)
+                normalized = stripped + "Z"
+            }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: normalized) { return date }
+            // 无小数时再试一次
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: normalized) { return date }
+
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Cannot decode date: \(raw) (normalized: \(normalized))"
+            )
         }
         return decoder
     }()
