@@ -142,6 +142,7 @@ def login(payload: AuthRequest, db: Session = Depends(get_db)) -> AuthResponse:
 def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)) -> dict[str, str]:
     email = normalize_email(str(payload.email))
     user = db.scalar(select(User).where(User.email_lower == email, User.deleted_at.is_(None)))
+    result = {"status": "ok"}
     if user is not None:
         code = generate_reset_code()
         reset = PasswordResetCode(
@@ -151,8 +152,13 @@ def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(
         )
         db.add(reset)
         db.commit()
-        mailer.send_password_reset_code(email, code)
-    return {"status": "ok"}
+        try:
+            mailer.send_password_reset_code(email, code)
+            result["emailSent"] = "true"
+        except Exception as e:
+            result["emailSent"] = "false"
+            result["emailError"] = str(e)
+    return result
 
 
 @app.post("/v1/auth/password-reset/confirm", response_model=AuthResponse)
