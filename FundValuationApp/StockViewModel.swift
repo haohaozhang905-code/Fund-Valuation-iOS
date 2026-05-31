@@ -349,7 +349,7 @@ final class StockViewModel: ObservableObject {
 
     private func makeProvider() -> StockQuoteProviding {
         THSBridgeStockQuoteProvider(
-            baseURL: providerConfig.endpoint.isEmpty ? AppEnvironment.thsBridgeURL : providerConfig.endpoint,
+            baseURL: AppEnvironment.thsBridgeURL,
             accessToken: providerConfig.apiKey
         )
     }
@@ -405,7 +405,7 @@ final class StockViewModel: ObservableObject {
             regularPrice: nil,
             previousClose: nil,
             marketState: USMarketHours.marketState(),
-            providerName: providerConfig.provider.capitalized,
+            providerName: "THS Bridge",
             updatedAt: nil,
             fetchedAt: Date(),
             todayChange: nil,
