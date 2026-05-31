@@ -125,6 +125,7 @@ final class SessionViewModel: ObservableObject {
 
     func uploadPortfolio(funds: [FundPosition], stocks: [StockPosition]) async {
         guard let token = accessToken else { return }
+        statusMessage = ""
         do {
             _ = try await service.replacePortfolio(
                 token: token,
@@ -134,10 +135,13 @@ final class SessionViewModel: ObservableObject {
                 )
             )
             statusMessage = "持仓已同步。"
+            // 3秒后自动清除状态消息
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            statusMessage = ""
         } catch AuthServiceError.unauthorized {
             expireSession(message: "登录已过期，请重新登录。")
         } catch {
-            statusMessage = "持仓同步失败，稍后会以本地缓存为准。"
+            statusMessage = message(for: error)
         }
     }
 
