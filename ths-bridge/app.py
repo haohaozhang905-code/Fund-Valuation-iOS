@@ -16,6 +16,7 @@ import sys
 # 优先同级目录加载 westock_client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import westock_client as wc
+import database
 from auth_service import (
     create_access_token,
     current_user,
@@ -105,7 +106,16 @@ def resolve_us_code(ticker: str) -> str:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "fetchedAt": now_iso()}
+    db_file = database.DB_FILE_PATH
+    db_exists = os.path.isfile(db_file) if db_file else False
+    return {
+        "status": "ok",
+        "fetchedAt": now_iso(),
+        "database": {
+            "path": db_file or "not_sqlite",
+            "exists": db_exists,
+        },
+    }
 
 
 # ====== 用户账号 ======

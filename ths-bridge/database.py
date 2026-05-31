@@ -1,7 +1,6 @@
 import os
 from collections.abc import Generator
 from pathlib import Path
-from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -10,10 +9,12 @@ from sqlalchemy.pool import StaticPool
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ths_bridge.db")
 
-# SQLite 需要确保父目录存在
+# 暴露数据库文件路径给 health 接口
+DB_FILE_PATH: str = ""
 if DATABASE_URL.startswith("sqlite"):
     path_part = DATABASE_URL.removeprefix("sqlite:///")
     if path_part and path_part != ":memory:":
+        DB_FILE_PATH = path_part
         db_dir = Path(path_part).parent
         db_dir.mkdir(parents=True, exist_ok=True)
 
