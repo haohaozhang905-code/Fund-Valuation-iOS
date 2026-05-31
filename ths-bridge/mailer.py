@@ -27,6 +27,13 @@ class Mailer:
             )
 
     def send_password_reset_code(self, email: str, code: str) -> None:
+        # 始终在日志中打印验证码，方便本地调试
+        logger.warning("Password reset code for %s: %s", email, code)
+
+        if not self._enabled:
+            logger.warning("SMTP not configured, email NOT sent to %s", email)
+            return
+
         subject = "FinMate — 密码重置验证码"
         body = (
             f"您好，\n\n"
@@ -37,13 +44,6 @@ class Mailer:
         self._send(email, subject, body)
 
     def _send(self, to: str, subject: str, body: str) -> None:
-        # Always log the code so it's visible in dev logs
-        logger.warning("Password reset code for %s: visible in email", to)
-
-        if not self._enabled:
-            logger.warning("SMTP not configured, email not sent to %s", to)
-            return
-
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = subject
         msg["From"] = self.from_addr
