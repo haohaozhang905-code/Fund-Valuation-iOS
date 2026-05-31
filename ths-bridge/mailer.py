@@ -28,6 +28,7 @@ class Mailer:
 
     def send_password_reset_code(self, email: str, code: str) -> None:
         # 始终在日志中打印验证码，方便本地调试
+        print(f"[MAILER] Password reset code for {email}: {code}", flush=True)
         logger.warning("Password reset code for %s: %s", email, code)
 
         if not self._enabled:
