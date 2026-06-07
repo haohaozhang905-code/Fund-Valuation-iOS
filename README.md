@@ -8,10 +8,10 @@ SwiftUI 持仓看板 App，当前覆盖 A 股基金和美股股票两类资产�
 |---|---|
 | 账号系统 | 邮箱注册/登录、退出登录、注销账号、邮箱验证码找回密码 |
 | 基金持仓 | 新增、编辑、删除、重复基金覆盖、本地缓存、登录后同步 |
-| 基金行情 | 天天基金估值、东方财富净值、F10 兜底、沪深300走势对比 |
+| 基金行情 | 通过独立 FinMate Backend 代理天天基金估值、东方财富净值、F10 兜底、沪深300走势对比 |
 | 美股持仓 | 新增、编辑、删除、重复股票覆盖、本地缓存、登录后同步 |
-| 美股行情 | Finnhub、Alpha Vantage、THS Bridge、Mock Provider |
-| 股票搜索 | 按 Provider 搜索 symbol 和公司名称 |
+| 美股行情 | 通过独立 FinMate Backend 获取标准化美股报价、搜索和 K 线 |
+| 股票搜索 | 通过同一后端搜索 symbol 和公司名称 |
 | K 线 | 美股 K 线展示、区间切换、缓存兜底 |
 | 刷新 | 当前 Tab 刷新、下拉刷新、回前台刷新、定时刷新 |
 | 设置 | 主题、AI 配置、美股数据源配置 |
@@ -38,15 +38,7 @@ FundValuationApp/
 └── StockViews.swift
 
 ths-bridge/
-├── app.py
-├── auth_service.py
-├── database.py
-├── models.py
-├── schemas.py
-├── mailer.py
-├── alembic/
-├── requirements.txt
-└── README.md
+└── README.md                  # 后端已迁移到独立项目的指针
 
 docs/
 ├── 01-项目现状与产品原则.md
@@ -61,17 +53,19 @@ docs/
 
 基金：
 
-- 天天基金估值：`fundgz.1234567.com.cn`
-- 东方财富净值：`fund.eastmoney.com/pingzhongdata`
-- 东方财富 F10：`fundf10.eastmoney.com/F10DataApi`
-- 沪深300走势：指数 K 线接口
+- App 统一请求 FinMate Backend：`/v1/funds/valuation/{code}`、`/v1/funds/nav-trend/{code}`、`/v1/funds/nav-latest/{code}`、`/v1/index/csi300`
+- 后端代理天天基金、东方财富和指数 K 线接口，客户端不直接处理跨域或上游格式差异。
 
 美股：
 
-- `THS Bridge`：推荐主源，iOS 通过自建 Bridge 获取同花顺/Westock 等上游数据。
-- `Finnhub`：备用源，需要 API Key。
-- `Alpha Vantage`：低频兜底，需要 API Key。
-- `Mock`：本地调试。
+- App 统一请求 FinMate Backend：`/v1/stocks/search`、`/v1/stocks/quote`、`/v1/stocks/kline`
+- 后端负责 Yahoo Finance、Twelve Data、Westock 等上游适配、缓存、限流和字段标准化。
+
+后端项目已拆分到：
+
+```text
+/Users/billzhang/GitHub/Fund Valuation Backend
+```
 
 ## 核心口径
 

@@ -15,6 +15,33 @@ struct FundValuationResponse: Decodable {
     let gztime: String?
 }
 
+// MARK: - THS Bridge API 响应模型（与 Web 端一致）
+
+private struct THSNavTrendResponse: Decodable {
+    let name: String?
+    let netWorthTrend: [THSNavTrendPoint]?
+}
+private struct THSNavTrendPoint: Decodable {
+    let x: Double
+    let y: Double
+}
+private struct THSNavLatestResponse: Decodable {
+    let items: [THSNavLatestItem]?
+}
+private struct THSNavLatestItem: Decodable {
+    let date: String
+    let nav: String
+}
+private struct THSCSI300Response: Decodable {
+    let items: [THSCSI300Item]?
+}
+private struct THSCSI300Item: Decodable {
+    let date: String?
+    let close: String?
+}
+
+// MARK: - 基金数据服务（统一走 ths-bridge，与 Web 端保持一致）
+
 struct FundDataService {
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -22,11 +49,7 @@ struct FundDataService {
         config.timeoutIntervalForResource = 60
         return URLSession(configuration: config)
     }()
-    private let valuationBase = "https://fundgz.1234567.com.cn/js/"
-    private let pingBase = "https://fund.eastmoney.com/pingzhongdata/"
-    private let f10Base = "https://fundf10.eastmoney.com/F10DataApi.aspx"
-    private let hisBase = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    private let sinaIndexBase = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+    private let thsBase = AppEnvironment.thsBridgeURL
 
     /// 验证基金代码是否有效（能否从 API 获取到数据）
     func validateFundCode(_ code: String) async -> Bool {
@@ -48,65 +71,47 @@ struct FundDataService {
     }
 
     func fetchNavWithName(fundCode: String) async -> (NavPair?, String?) {
-        async let ping = fetchNavFromPingzhong(fundCode: fundCode)
-        async let f10 = fetchLatestNavFromF10(fundCode: fundCode)
+        async let ping = fetchNavFromTrend(fundCode: fundCode)
+        async let f10 = fetchLatestNav(fundCode: fundCode)
         let (pingPair, fundName) = await ping
         let f10Pair = await f10
         let pair = mergeNavPair(ping: pingPair, f10: f10Pair)
         return (pair, fundName)
     }
 
-    /// pingzhongdata 的 Data_netWorthTrend，T+2/QDII 基金可能滞后
-    private func fetchNavFromPingzhong(fundCode: String) async -> (NavPair?, String?) {
-        let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else { return (nil, nil) }
+    /// ths-bridge nav-trend → 同 Web 端 pingzhongdata 数据源
+    private func fetchNavFromTrend(fundCode: String) async -> (NavPair?, String?) {
+        let path = "/v1/funds/nav-trend/\(fundCode)"
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let text = String(data: data, encoding: .utf8) else { return (nil, nil) }
-            let fundName = extractJSString(text: text, variable: "fS_name")
-            guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return (nil, fundName) }
-            guard let arr = try parseNetWorthTrend(rawArray) else { return (nil, fundName) }
-            return (buildNavPair(points: arr), fundName)
+            let obj = try await fetchJSON(path: path)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            let trend = try JSONDecoder().decode(THSNavTrendResponse.self, from: data)
+            let pair = buildNavPair(from: trend.netWorthTrend ?? [])
+            return (pair, trend.name)
         } catch {
             return (nil, nil)
         }
     }
 
-    /// F10DataApi 历史净值，更新更及时，T+2/QDII 基金适用
-    private func fetchLatestNavFromF10(fundCode: String) async -> NavPair? {
-        let urlString = "\(f10Base)?type=lsjz&code=\(fundCode)&page=1&per=5"
-        guard let url = URL(string: urlString) else { return nil }
+    /// ths-bridge nav-latest → 同 Web 端 F10DataApi 数据源
+    private func fetchLatestNav(fundCode: String) async -> NavPair? {
+        let path = "/v1/funds/nav-latest/\(fundCode)"
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
-            return parseF10LsJzContent(text)
+            let obj = try await fetchJSON(path: path)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            let latest = try JSONDecoder().decode(THSNavLatestResponse.self, from: data)
+            let items = latest.items ?? []
+            var points: [NavPoint] = []
+            for item in items {
+                let date = String(item.date.prefix(10))
+                guard let nav = Double(item.nav), nav > 0 else { continue }
+                points.append(NavPoint(date: date, value: nav))
+            }
+            guard !points.isEmpty else { return nil }
+            return NavPair(latest: points[0], previous: points.count > 1 ? points[1] : nil)
         } catch {
             return nil
         }
-    }
-
-    private func parseF10LsJzContent(_ text: String) -> NavPair? {
-        guard let range = text.range(of: "content:\"", options: .literal),
-              let endRange = text.range(of: "\",records:", options: .literal) else { return nil }
-        let content = String(text[range.upperBound..<endRange.lowerBound])
-        let separators = CharacterSet(charactersIn: "\n\r")
-        let rows = content.components(separatedBy: separators).filter { row in
-            row.contains("|") && !row.contains("净值日期") && !row.contains("---")
-        }
-        var points: [NavPoint] = []
-        for row in rows {
-            let cols = row.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard cols.count >= 3 else { continue }
-            let dateStr = cols[1]
-            guard dateStr.count >= 10, dateStr.contains("-") else { continue }
-            let date = String(dateStr.prefix(10))
-            guard let nav = Double(cols[2]), nav > 0 else { continue }
-            points.append(NavPoint(date: date, value: nav))
-        }
-        guard !points.isEmpty else { return nil }
-        let latest = points[0]
-        let previous = points.count > 1 ? points[1] : nil
-        return NavPair(latest: latest, previous: previous)
     }
 
     private func mergeNavPair(ping: NavPair?, f10: NavPair?) -> NavPair? {
@@ -118,14 +123,13 @@ struct FundDataService {
         return ping
     }
 
+    /// 基金实时估值（ths-bridge → 天天基金）
     func fetchValuation(fundCode: String) async -> FundValuationResponse? {
-        let urlString = "\(valuationBase)\(fundCode).js?t=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else { return nil }
+        let path = "/v1/funds/valuation/\(fundCode)"
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
-            guard let json = extractJSONP(from: text, callbackName: "jsonpgz") else { return nil }
-            return try JSONDecoder().decode(FundValuationResponse.self, from: Data(json.utf8))
+            let obj = try await fetchJSON(path: path)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            return try JSONDecoder().decode(FundValuationResponse.self, from: data)
         } catch {
             return nil
         }
@@ -136,64 +140,40 @@ struct FundDataService {
         return pair
     }
 
-    private func extractJSString(text: String, variable: String) -> String? {
-        let patterns = [
-            "var\\s+\(variable)\\s*=\\s*\"([^\"]*)\"",
-            "var\\s+\(variable)\\s*=\\s*'([^']*)'"
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            if let match = regex.firstMatch(in: text, options: [], range: range),
-               match.numberOfRanges >= 2,
-               let r = Range(match.range(at: 1), in: text) {
-                return String(text[r]).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
-
+    /// 基金净值走势（ths-bridge → 东方财富 pingzhongdata）
     func fetchNavTrend(fundCode: String) async -> [NavPoint] {
-        let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else { return [] }
+        let path = "/v1/funds/nav-trend/\(fundCode)"
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let text = String(data: data, encoding: .utf8) else { return [] }
-            guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return [] }
-            guard let arr = try parseNetWorthTrend(rawArray) else { return [] }
-            let points: [NavPoint] = arr.compactMap { row in
-                guard let y = row["y"] as? Double else { return nil }
-                guard let x = row["x"] as? Double else { return nil }
-                let date = DateHelper.ymdString(fromMS: x)
-                guard !date.isEmpty, y > 0 else { return nil }
-                return NavPoint(date: date, value: y)
+            let obj = try await fetchJSON(path: path)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            let trend = try JSONDecoder().decode(THSNavTrendResponse.self, from: data)
+            return (trend.netWorthTrend ?? []).compactMap { point in
+                guard point.y > 0 else { return nil }
+                let date = DateHelper.ymdString(fromMS: point.x)
+                guard !date.isEmpty else { return nil }
+                return NavPoint(date: date, value: point.y)
             }
-            return points
         } catch {
             return []
         }
     }
 
-    /// 沪深300指数近N交易日累计涨跌幅（新浪财经 API，sh000300）
+    /// 沪深300指数近N交易日累计涨跌幅（ths-bridge → 新浪财经）
     func fetchCSI300Trend(tradingDaysLimit: Int) async -> [DailyPerformancePoint] {
-        var comp = URLComponents(string: sinaIndexBase)!
-        comp.queryItems = [
-            URLQueryItem(name: "symbol", value: "sh000300"),
-            URLQueryItem(name: "scale", value: "240"),
-            URLQueryItem(name: "ma", value: "no"),
-            URLQueryItem(name: "datalen", value: "\(min(tradingDaysLimit + 10, 1023))")
-        ]
-        guard let url = comp.url else { return [] }
+        let path = "/v1/index/csi300"
+        let queryItems = [URLQueryItem(name: "datalen", value: "\(min(tradingDaysLimit + 10, 800))")]
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+            let obj = try await fetchJSON(path: path, queryItems: queryItems)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            let csi300 = try JSONDecoder().decode(THSCSI300Response.self, from: data)
+            let items = csi300.items ?? []
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd"
             formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
             var navPoints: [(date: String, close: Double)] = []
-            for item in arr {
-                guard let day = item["day"] as? String, !day.isEmpty,
-                      let closeStr = item["close"] as? String,
+            for item in items {
+                guard let day = item.date, !day.isEmpty,
+                      let closeStr = item.close,
                       let close = Double(closeStr), close > 0 else { continue }
                 let date = String(day.prefix(10))
                 if let d = formatter.date(from: date) {
@@ -213,28 +193,27 @@ struct FundDataService {
         }
     }
 
-    /// 仅交易日的累计涨跌幅，一次请求获取（过滤周末，横轴仅含交易日）
+    /// 仅交易日的累计涨跌幅（ths-bridge → 东方财富 pingzhongdata）
     func fetchDailyPerformanceTrend(fundCode: String, tradingDaysLimit: Int = 63) async -> [DailyPerformancePoint] {
-        let urlString = "\(pingBase)\(fundCode).js?v=\(Int(Date().timeIntervalSince1970))"
-        guard let url = URL(string: urlString) else { return [] }
+        let path = "/v1/funds/nav-trend/\(fundCode)"
         do {
-            let (data, _) = try await fetchData(from: url)
-            guard let text = String(data: data, encoding: .utf8) else { return [] }
-            guard let rawArray = extractJSVariable(text: text, variable: "Data_netWorthTrend") else { return [] }
-            guard let arr = try parseNetWorthTrend(rawArray) else { return [] }
+            let obj = try await fetchJSON(path: path)
+            let data = try JSONSerialization.data(withJSONObject: obj)
+            let trend = try JSONDecoder().decode(THSNavTrendResponse.self, from: data)
+            let netWorth = trend.netWorthTrend ?? []
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd"
             formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
             var navPoints: [(date: String, nav: Double)] = []
-            for row in arr {
-                guard let x = row["x"] as? Double, let y = row["y"] as? Double, y > 0 else { continue }
-                let date = DateHelper.ymdString(fromMS: x)
+            for point in netWorth {
+                guard point.y > 0 else { continue }
+                let date = DateHelper.ymdString(fromMS: point.x)
                 guard !date.isEmpty else { continue }
                 if let d = formatter.date(from: date) {
                     let w = Calendar.current.component(.weekday, from: d)
                     if w == 1 || w == 7 { continue }
                 }
-                navPoints.append((date: date, nav: y))
+                navPoints.append((date: date, nav: point.y))
             }
             let slice = Array(navPoints.suffix(tradingDaysLimit))
             guard let firstNav = slice.first?.nav, firstNav > 0 else { return [] }
@@ -247,67 +226,47 @@ struct FundDataService {
         }
     }
 
-    private func extractJSONP(from text: String, callbackName: String) -> String? {
-        let pattern = "\(callbackName)\\((.*)\\);?"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
-            return nil
+    // MARK: - HTTP 通用方法
+
+    private func fetchJSON(path: String, queryItems: [URLQueryItem] = []) async throws -> [String: Any] {
+        guard var comp = URLComponents(string: thsBase) else {
+            throw FundServiceError.invalidResponse
         }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-              let bodyRange = Range(match.range(at: 1), in: text)
-        else {
-            return nil
+        let basePath = comp.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        comp.path = basePath.isEmpty ? path : "/\(basePath)\(path)"
+        if !queryItems.isEmpty {
+            comp.queryItems = queryItems
         }
-        return String(text[bodyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = comp.url else {
+            throw FundServiceError.invalidPayload
+        }
+
+        let (data, response) = try await Self.session.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw FundServiceError.invalidResponse
+        }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw FundServiceError.invalidPayload
+        }
+        return obj
     }
 
-    private func extractJSVariable(text: String, variable: String) -> String? {
-        let pattern = "var\\s+\(variable)\\s*=\\s*(\\[.*?\\]);"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
-            return nil
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-              let bodyRange = Range(match.range(at: 1), in: text)
-        else {
-            return nil
-        }
-        return String(text[bodyRange])
-    }
+    // MARK: - 内部工具方法
 
-    private func parseNetWorthTrend(_ jsonArray: String) throws -> [[String: Any]]? {
-        guard let data = jsonArray.data(using: .utf8) else { return nil }
-        let raw = try JSONSerialization.jsonObject(with: data)
-        return raw as? [[String: Any]]
-    }
-
-    private func fetchData(from url: URL, attempts: Int = 2) async throws -> (Data, URLResponse) {
-        var lastError: Error?
-        for attempt in 1...attempts {
-            do {
-                return try await Self.session.data(from: url)
-            } catch {
-                lastError = error
-                if attempt < attempts {
-                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 350_000_000)
-                }
-            }
-        }
-        throw lastError ?? FundServiceError.invalidResponse
-    }
-
-    private func buildNavPair(points: [[String: Any]]) -> NavPair? {
-        let mapped: [NavPoint] = points.compactMap { row in
-            guard let y = row["y"] as? Double else { return nil }
-            guard let x = row["x"] as? Double else { return nil }
-            let date = DateHelper.ymdString(fromMS: x)
-            guard !date.isEmpty, y > 0 else { return nil }
-            return NavPoint(date: date, value: y)
-        }
-        guard !mapped.isEmpty else { return nil }
-        let latest = mapped[mapped.count - 1]
-        let previous = mapped.count > 1 ? mapped[mapped.count - 2] : nil
-        return NavPair(latest: latest, previous: previous)
+    private func buildNavPair(from points: [THSNavTrendPoint]) -> NavPair? {
+        guard !points.isEmpty else { return nil }
+        let latest = points[points.count - 1]
+        let previous = points.count > 1 ? points[points.count - 2] : nil
+        let latestDate = DateHelper.ymdString(fromMS: latest.x)
+        guard !latestDate.isEmpty, latest.y > 0 else { return nil }
+        let latestPoint = NavPoint(date: latestDate, value: latest.y)
+        let previousPoint: NavPoint? = {
+            guard let prev = previous else { return nil }
+            let prevDate = DateHelper.ymdString(fromMS: prev.x)
+            guard !prevDate.isEmpty, prev.y > 0 else { return nil }
+            return NavPoint(date: prevDate, value: prev.y)
+        }()
+        return NavPair(latest: latestPoint, previous: previousPoint)
     }
 }
 
@@ -381,7 +340,7 @@ enum DateHelper {
         return weekday >= 2 && weekday <= 6
     }
 
-    /// 交易中：9:30-11:30 或 13:00-15:00
+    /// 交易中：9:30-11:30 或 13:00-15:00（精确到分钟，用于价格计算策略）
     static func marketOpenNow() -> Bool {
         guard nowTradingDay() else { return false }
         let comps = calendar.dateComponents([.hour, .minute], from: Date())
@@ -403,6 +362,13 @@ enum DateHelper {
         let comps = calendar.dateComponents([.hour, .minute], from: Date())
         let minutes = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         return minutes >= 900 || (690..<780).contains(minutes)
+    }
+
+    /// 交易日 9:00-15:00 整小时区间，含午休（与 Web 端 isMarketOpen() 一致，仅用于 Banner 标签显示）
+    static func marketSessionOpen() -> Bool {
+        guard nowTradingDay() else { return false }
+        let h = Calendar.current.component(.hour, from: Date())
+        return h >= 9 && h < 15
     }
 
     static func ymdString(fromMS ms: Double) -> String {

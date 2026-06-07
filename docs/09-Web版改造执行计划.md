@@ -2,11 +2,11 @@
 
 ## 1. 目标
 
-将现有纯前端单页应用（`Fund-Valuation-Viewing`）改造为 iOS 端的网页分身，共享同一套后端服务，实现：
+将现有纯前端单页应用（`Fund-Valuation-Viewing`）改造为 iOS 端的网页分身，共享独立 FinMate Backend，实现：
 
 - 同一账号、同一持仓数据，手机和网页实时同步
 - 网页端覆盖 iOS 端全部核心功能（基金 + 美股持仓查看与管理）
-- 后端 100% 复用，不改动现有 iOS 后端 API
+- 后端 100% 复用，不改动现有 `/v1/*` API
 
 ---
 
@@ -25,13 +25,19 @@
 | `GET /v1/stocks/quote` | 美股行情 | ✅ |
 | `GET /v1/stocks/search` | 美股搜索 | ✅ |
 | `GET /v1/stocks/kline` | 美股 K 线 | ✅ |
+| `GET /v1/funds/valuation/{code}` | 基金估值 | ✅ |
+| `GET /v1/funds/nav-trend/{code}` | 基金净值走势 | ✅ |
+| `GET /v1/funds/nav-latest/{code}` | 基金最新净值 | ✅ |
+| `GET /v1/index/csi300` | 沪深300走势 | ✅ |
 | `GET /health` | 健康检查 | ✅ |
+| `GET /openapi.json` | OpenAPI 合约 | ✅ |
 
-### 2.2 基金行情数据（保持前端直连）
+### 2.2 基金行情数据（统一走后端）
 
-基金估值和净值仍由前端直接请求天天基金/东方财富接口，与 iOS 端一致，不走后端。原因：
-- 这些接口是公开的 JSONP，前端可直接调用
-- 走后端会增加延迟和后端负载
+基金估值、净值和沪深300走势统一请求独立 FinMate Backend，与 iOS 和未来 Android 保持一致。原因：
+- 浏览器不再需要处理上游跨域、JSONP 和格式差异。
+- 上游字段变化时只需要后端热修。
+- 三端共享同一套缓存、限流和错误归一策略。
 
 ### 2.3 设计语言
 
@@ -83,7 +89,7 @@ Fund-Valuation-Viewing/
 |------|------|
 | 启动时拉取远程持仓 | `GET /v1/portfolio`，合并或覆盖本地数据 |
 | 增/删/改时同步 | 每次操作后调用 `PUT /v1/portfolio` |
-| 批量导入脚本 | 复用 `ths-bridge/batch_import.py` |
+| 批量导入脚本 | 复用独立后端项目的 `batch_import.py` |
 | 同步冲突处理 | 远程优先（覆盖本地） |
 
 **数据流**：
@@ -135,7 +141,7 @@ Fund-Valuation-Viewing/
 |------|------|
 | 登录/注册 | 复用后端认证 API |
 | 美股 Tab | 与基金平行，顶部 Tab 切换 |
-| 美股添加 | 搜索补全（THS Bridge）、成本价、股数 |
+| 美股添加 | 搜索补全（FinMate Backend）、成本价、股数 |
 | 美股列表 | 代码、现价、成本、当日盈亏、累计盈亏、K 线 |
 | 云端同步提示 | 同步状态/错误提示 |
 | 设置页 | 账号信息、退出/注销 |
@@ -156,7 +162,7 @@ Fund-Valuation-Viewing/
 ```text
 浏览器
   ├── 登录/注册 → POST /v1/auth/login → JWT → localStorage
-  ├── 基金持仓 → 天天基金 API（直连）+ 本地计算
+  ├── 基金持仓 → FinMate Backend 基金代理 API + 本地计算
   ├── 美股持仓 → POST /v1/stocks/quote（走后端）
   └── 持仓同步 → GET|PUT /v1/portfolio（走后端）
 ```
@@ -206,7 +212,7 @@ Phase 4: 设置页        ← 账号管理
 
 ## 7. 风险与注意事项
 
-1. **CORS**：当前后端未配置 CORS，前端浏览器跨域请求会被拦截。需要在 `app.py` 中添加 `CORSMiddleware` 允许来自 GitHub Pages 的请求。
+1. **CORS**：独立后端已配置 `CORSMiddleware`，需要持续确保 GitHub Pages 生产域名和本地开发端口在 allowlist 中。
 2. **Token 安全**：JWT 存储在 `localStorage`，存在 XSS 泄露风险。个人使用可接受，如需更高安全应使用 `httpOnly Cookie`。
 3. **浏览器兼容**：需兼容 Chrome/Safari/Firefox 最新两个大版本。
 4. **基金接口跨域**：天天基金和东方财富的 JSONP 接口不受 CORS 限制，保持现有方式即可。

@@ -1,6 +1,11 @@
-__pycache__/
-*.pyc
+.env
 .venv/
 .venv311/
+__pycache__/
+*.pyc
 *.db
-.env
+.DS_Store
+alembic/.DS_Store
+alembic/__pycache__/
+alembic/versions/__pycache__/
+tests/__pycache__/

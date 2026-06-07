@@ -5,13 +5,15 @@
 **目标**：用 Flutter 实现 FinMate Android 版，功能与 iOS 版对齐。
 
 **后端复用**：
-- 美股行情 → 已部署的 `thsbridge.zeabur.app`，无需再搭
-- 基金行情 → 直接调天天基金 / 东方财富公开 API（与 iOS 一致）
+- 账号体系、持仓同步、基金行情、美股行情 → 全部复用独立 FinMate Backend
+- 生产地址第一阶段保持 `https://thsbridge.zeabur.app`
+- OpenAPI 合约以独立后端项目的 `/openapi.json` 和 `docs/API.md` 为准
 
 **不做的**：
 - 银行/券商登录
 - 自动同步交易持仓
 - 下单交易
+- Android 独立用户表或独立持仓格式
 
 ---
 
@@ -38,8 +40,10 @@ finmate_flutter/
 │   │   ├── fund_models.dart
 │   │   └── stock_models.dart
 │   ├── services/                  # 网络层
-│   │   ├── fund_api_service.dart  # 天天基金/东方财富 API
-│   │   ├── stock_api_service.dart # THS Bridge (Zeabur)
+│   │   ├── auth_api_service.dart  # 登录/注册/找回密码/当前用户
+│   │   ├── portfolio_api_service.dart # 云端持仓 GET/PUT
+│   │   ├── fund_api_service.dart  # FinMate Backend 基金代理 API
+│   │   ├── stock_api_service.dart # FinMate Backend 美股 API
 │   │   └── ai_service.dart        # LLM API
 │   ├── viewmodels/                # 状态管理
 │   │   ├── fund_viewmodel.dart
@@ -82,7 +86,7 @@ finmate_flutter/
 |---|------|------|
 | 1 | 创建 Flutter 项目，配好依赖 | 10min |
 | 2 | 定义美股数据模型 | 15min |
-| 3 | 实现 StockApiService（调 Zeabur bridge） | 20min |
+| 3 | 实现 StockApiService（调 FinMate Backend） | 20min |
 | 4 | 实现 StockViewModel | 20min |
 | 5 | 实现美股首页（Banner + 列表） | 30min |
 | 6 | 实现添加/编辑持仓 | 30min |
@@ -95,7 +99,7 @@ finmate_flutter/
 | # | 任务 | 预估 |
 |---|------|------|
 | 9 | 定义基金数据模型 | 15min |
-| 10 | 实现 FundApiService（天天基金 API） | 30min |
+| 10 | 实现 FundApiService（调 FinMate Backend） | 30min |
 | 11 | 实现 FundViewModel | 25min |
 | 12 | 实现基金首页（Banner + 列表） | 30min |
 | 13 | 实现添加/编辑基金 | 25min |
@@ -130,7 +134,7 @@ class StockApiService {
 }
 ```
 
-✅ 后端已部署，无需任何改造。端口和协议直接用 `https://thsbridge.zeabur.app`。
+✅ 后端由独立 FinMate Backend 项目维护。Android 只实现客户端，不新增后端。
 
 ### 5.2 数据模型
 
@@ -161,9 +165,9 @@ class StockViewModel extends _$StockViewModel {
   List<StockSnapshot> snapshots = [];
   // ...
   
-  Future<void> refreshAll() async { /* 串行调 bridge */ }
-  Future<List<StockSearchResult>> search(String query) async { /* 调 bridge */ }
-  Future<StockKLineData> fetchKLine(String symbol) async { /* 调 bridge */ }
+  Future<void> refreshAll() async { /* 串行调 FinMate Backend */ }
+  Future<List<StockSearchResult>> search(String query) async { /* 调 FinMate Backend */ }
+  Future<StockKLineData> fetchKLine(String symbol) async { /* 调 FinMate Backend */ }
 }
 ```
 
@@ -171,18 +175,25 @@ class StockViewModel extends _$StockViewModel {
 
 ### 6.1 API 客户端
 
-基金数据源与 iOS 完全一致，直接调公网 API：
+基金数据源与 iOS/Web 完全一致，统一调 FinMate Backend：
 
 | 用途 | API |
 |------|-----|
-| 实时估值 | `https://fundgz.1234567.com.cn/js/{code}.js` |
-| 净值趋势 | `https://fund.eastmoney.com/pingzhongdata/{code}.js` |
-| 最新净值 | `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}` |
-| 沪深300 | 新浪财经 API |
+| 实时估值 | `GET /v1/funds/valuation/{code}` |
+| 净值趋势 | `GET /v1/funds/nav-trend/{code}` |
+| 最新净值 | `GET /v1/funds/nav-latest/{code}` |
+| 沪深300 | `GET /v1/index/csi300` |
 
 ### 6.2 本地持久化
 
-用户持仓数据存本地（`shared_preferences` 或 `hive`），不涉及用户注册/登录。
+本地存储只作为缓存和离线兜底。登录后权威持仓来自：
+
+```http
+GET /v1/portfolio
+PUT /v1/portfolio
+```
+
+Token 可用 `flutter_secure_storage` 保存；不要把持仓云端格式改成 Android 专用格式。
 
 ## 7. 视觉规范
 

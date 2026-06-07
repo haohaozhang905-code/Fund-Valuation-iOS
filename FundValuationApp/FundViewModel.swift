@@ -145,7 +145,10 @@ final class FundViewModel: ObservableObject {
         let tradingDay = DateHelper.nowTradingDay()
         let beforeMarket = DateHelper.marketBeforeOpenToday()
         let afterMarket = DateHelper.marketAfterCloseToday()
-        summary.tradingBadge = (marketOpen ? "交易中" : "休市") + " · " + timeString()
+
+        // 交易日 9:00-15:00 均视为盘中（含午休），与 Web 端 h>=9 && h<15 逻辑一致
+        let marketSession = DateHelper.marketSessionOpen()
+        summary.tradingBadge = (marketSession ? "交易中" : "休市") + " · " + timeString()
 
         if funds.isEmpty {
             snapshots = []
